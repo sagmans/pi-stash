@@ -35,7 +35,7 @@ EOF
 
 # Skip if the tag policy already exists; the API does not deduplicate.
 if ! gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
-	--jq ".branch_policies[].name" | grep -qx "${TAG_PATTERN}"; then
+	--jq ".branch_policies[].name" | grep -Fqx -- "${TAG_PATTERN}"; then
 	gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
 		-X POST -f "name=${TAG_PATTERN}" -f "type=tag" >/dev/null
 fi
