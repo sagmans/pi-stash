@@ -2,10 +2,10 @@
 
 Persistent editor draft stashes for [pi](https://github.com/earendil-works/pi-coding-agent).
 
-`pi-stash` saves unsent editor text per working directory under
-`~/.pi/agent/pi-stash/`, then restores it later without submitting it to a
-model. Temporary pasted images are copied into private stash storage so restored
-references survive OS cleanup.
+`pi-stash` saves unsent editor text per working directory under the configured
+Pi agent directory's `pi-stash/` subtree (normally `~/.pi/agent/pi-stash/`), then
+restores it later without submitting it to a model. Temporary pasted images are
+copied into private stash storage so restored references survive OS cleanup.
 
 ## Features
 
@@ -54,10 +54,10 @@ commands.
 
 ## Storage and privacy
 
-Each exact working directory maps to one JSON file beneath
-`~/.pi/agent/pi-stash/`; copied images live in an adjacent per-entry asset
-directory. Directories use mode `0700` and files use `0600`. pi-stash performs no
-network requests.
+Each exact working directory maps to one JSON file beneath the configured Pi
+agent directory's `pi-stash/` subtree; copied images live in an adjacent
+per-entry asset directory. Directories use mode `0700` and files use `0600`.
+pi-stash performs no network requests.
 
 Stashes are local plaintext and may contain sensitive drafts. Protect the host
 account and never share stash files or raw terminal captures without redaction.

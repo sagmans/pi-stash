@@ -2,7 +2,7 @@
 
 Use this maintainer-only Herdr smoke after runtime-loading or storage changes.
 It launches the checkout as a real Pi TUI package without reading or mutating
-real state under `~/.pi/agent`.
+the user's configured Pi agent directory.
 
 ## Preconditions
 

@@ -36,6 +36,10 @@ _Avoid_: Drop
 A temporary-directory image copied into private stash storage so a restored draft retains a valid reference.
 _Avoid_: Attachment, uploaded image
 
+**Pending asset cleanup**:
+A durable asset-directory identifier retained after its owning entry is deleted, until best-effort removal succeeds and is acknowledged.
+_Avoid_: Orphan, cache
+
 **Operational notice**:
 A local runtime message intended for the current user; it is not stable or safe to share without redaction.
 _Avoid_: Diagnostic, log

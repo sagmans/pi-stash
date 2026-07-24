@@ -35,8 +35,10 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
    `/stash-list`, `/stash-pop`, `/stash-drop`, `/stash-clear`, optional
    `prefix+s` and `prefix+Shift+S` integration, and temporary-image restore.
 5. README accuracy pass: every documented command/path still behaves as written.
-6. Package-content pass: `npm pack --dry-run` contains only the files declared
-   by `package.json` and no local state, tests, or maintainer tooling.
+6. Package-content pass: `npm pack --dry-run` contains only the runtime files
+   declared by `package.json` plus npm's mandatory package metadata and standard
+   documentation (`package.json`, README, and LICENSE); it contains no local
+   state, tests, or maintainer tooling.
 7. Changelog roll-forward: `CHANGELOG.md` carries a new dated `[X.Y.Z]`
    section for the target version with the relevant `Unreleased` entries,
    and exactly one `Unreleased` section remains.
@@ -110,6 +112,6 @@ Configure npm trusted publishing with these exact values:
   mark the version broken and point at the replacement, and publish a patch
   release restoring correct behavior.
 - **Bad runtime behavior:** patch release; never silently rewrite or remove user
-  stash data under `~/.pi/agent/pi-stash/`.
+  stash data under the configured Pi agent directory's `pi-stash/` subtree.
 - **Stash data:** older releases must never overwrite an unsupported schema.
   Any schema change requires a migration plan in the PR and a release note.

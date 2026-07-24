@@ -6,6 +6,15 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Respect Pi's configured agent directory for storage and repair private asset-directory permissions.
+- Preserve image paths containing spaces or adjacent punctuation, and roll back partial asset staging.
+- Make entry deletion, restored-image transfer, and retryable asset cleanup durable across failures and restarts.
+- Serialize stash actions, await them during shutdown, and suppress inactive prefix or pending-overlay actions.
+- Recover abandoned lock-reclamation guards and roll back editor restore when persistence fails.
+- Align release package-content guidance and treat literal tag policy patterns idempotently.
+
 ## [0.1.0] - 2026-07-23
 
 ### Added
