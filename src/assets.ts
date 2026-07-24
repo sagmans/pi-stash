@@ -19,6 +19,15 @@ import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "./store.ts";
 import { isSafeEntryId } from "./types.ts";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp)/giu;
+const MAX_IMAGE_PATH_LENGTH = 4096;
+
+type ImageReference = {
+	start: number;
+	end: number;
+	source: string;
+	ownedAssetDir?: string;
+};
 
 export type PersistResult = {
 	text: string;
@@ -47,54 +56,101 @@ export async function persistTmpImages(input: {
 	ownedAssetsRoot?: string;
 }): Promise<PersistResult> {
 	const tmpDir = input.tmpDir ?? tmpdir();
-	// Split with capturing separators so reconstruction preserves the original
-	// whitespace exactly. Pasted image paths never contain spaces, so a
-	// whitespace split is sufficient to isolate them as tokens.
-	const parts = input.text.split(/(\s+)/);
+	const references = await findImageReferences(input.text, tmpDir, input.ownedAssetsRoot);
 	const staged = new Map<string, string>();
-	const rewrites: Array<{ at: number; replacement: string }> = [];
 	const transferredAssetDirs = new Set<string>();
-	let count = 0;
 
-	for (let index = 0; index < parts.length; index += 1) {
-		const token = parts[index];
-		if (token === undefined) continue;
-		const ownedAssetDir = input.ownedAssetsRoot
-			? resolveOwnedAssetDir(token, input.ownedAssetsRoot)
-			: undefined;
-		if (!isImagePath(token, tmpDir) && !ownedAssetDir) continue;
-		const exists = await stat(token).then(
-			() => true,
-			() => false,
-		);
-		if (!exists) continue;
-
-		const stagedPath = staged.get(token) ?? stageCopy(token, input.assetDir, count);
-		staged.set(token, stagedPath);
-		rewrites.push({ at: index, replacement: stagedPath });
-		if (ownedAssetDir && path.resolve(ownedAssetDir) !== path.resolve(input.assetDir)) {
-			transferredAssetDirs.add(ownedAssetDir);
+	for (const reference of references) {
+		if (!staged.has(reference.source)) {
+			staged.set(reference.source, stageCopy(reference.source, input.assetDir, staged.size));
 		}
-		count += 1;
+		if (
+			reference.ownedAssetDir &&
+			path.resolve(reference.ownedAssetDir) !== path.resolve(input.assetDir)
+		) {
+			transferredAssetDirs.add(reference.ownedAssetDir);
+		}
 	}
 
-	if (count === 0) {
+	if (staged.size === 0) {
 		// No assets to keep: leave nothing behind so an empty asset dir never
 		// accumulates across stashes.
 		await rm(input.assetDir, { force: true, recursive: true });
 		return { text: input.text, count: 0, transferredAssetDirs: [] };
 	}
 
-	await mkdir(input.assetDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-	for (const { at, replacement } of rewrites) {
-		const source = parts[at];
-		if (source === undefined) continue;
-		await copyFile(source, replacement);
-		await chmod(replacement, PRIVATE_FILE_MODE);
-		parts[at] = replacement;
+	try {
+		await mkdir(input.assetDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+		// mkdir's mode does not repair pre-existing permissive directories.
+		await chmod(path.dirname(input.assetDir), PRIVATE_DIR_MODE);
+		await chmod(input.assetDir, PRIVATE_DIR_MODE);
+		for (const [source, destination] of staged) {
+			await copyFile(source, destination);
+			await chmod(destination, PRIVATE_FILE_MODE);
+		}
+	} catch (error) {
+		// Entry ids are unique, so the entire staging directory belongs to this
+		// failed transaction and can be removed without affecting older stashes.
+		await rm(input.assetDir, { force: true, recursive: true });
+		throw error;
 	}
 
-	return { text: parts.join(""), count, transferredAssetDirs: [...transferredAssetDirs] };
+	let text = input.text;
+	for (const reference of [...references].reverse()) {
+		const replacement = staged.get(reference.source);
+		if (replacement) {
+			text = `${text.slice(0, reference.start)}${replacement}${text.slice(reference.end)}`;
+		}
+	}
+	return {
+		text,
+		count: staged.size,
+		transferredAssetDirs: [...transferredAssetDirs],
+	};
+}
+
+async function findImageReferences(
+	text: string,
+	tmpRoot: string,
+	ownedAssetsRoot?: string,
+): Promise<ImageReference[]> {
+	const roots = [...new Set([tmpRoot, ownedAssetsRoot].filter((root): root is string => !!root))]
+		.map((root) => path.resolve(root))
+		.sort((left, right) => right.length - left.length);
+	const referencesByStart = new Map<number, ImageReference>();
+
+	for (const root of roots) {
+		let start = text.indexOf(root);
+		while (start >= 0) {
+			const searchEnd = Math.min(text.length, start + MAX_IMAGE_PATH_LENGTH);
+			const segment = text.slice(start, searchEnd);
+			let found: ImageReference | undefined;
+			for (const match of segment.matchAll(IMAGE_EXTENSION_PATTERN)) {
+				const end = start + (match.index ?? 0) + match[0].length;
+				const source = text.slice(start, end);
+				const ownedAssetDir = ownedAssetsRoot
+					? resolveOwnedAssetDir(source, ownedAssetsRoot)
+					: undefined;
+				if (!isImagePath(source, tmpRoot) && !ownedAssetDir) continue;
+				const sourceStat = await stat(source).catch(() => undefined);
+				if (!sourceStat?.isFile()) continue;
+				// Longest existing candidate preserves valid filenames containing an
+				// image-looking suffix before their real final extension.
+				found = { start, end, source, ownedAssetDir };
+			}
+			if (found && found.end > (referencesByStart.get(start)?.end ?? -1)) {
+				referencesByStart.set(start, found);
+			}
+			start = text.indexOf(root, start + root.length);
+		}
+	}
+
+	const references = [...referencesByStart.values()].sort(
+		(left, right) => left.start - right.start,
+	);
+	return references.filter(
+		(reference, index) => index === 0 || reference.start >= (references[index - 1]?.end ?? 0),
+	);
 }
 
 function resolveOwnedAssetDir(candidate: string, assetsRoot: string): string | undefined {

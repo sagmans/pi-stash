@@ -86,7 +86,9 @@ export function startStashBinding(opts: StashBindingOptions): () => void {
 	});
 
 	for (const claim of opts.claims) {
-		const off = opts.events.on(claim.eventId, () => claim.onFire());
+		const off = opts.events.on(claim.eventId, () => {
+			if (outcome === "claimed") claim.onFire();
+		});
 		cleanups.push(off);
 	}
 

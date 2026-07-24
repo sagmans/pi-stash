@@ -46,8 +46,8 @@ test("sanitizeCwd rejects a limit too short for a collision-resistant key", () =
 	assert.throws(() => sanitizeCwd("/repo", { maxLength: 21 }), /at least 22 bytes/);
 });
 
-test("defaultStashBaseDir lives under ~/.pi/agent/pi-stash", () => {
-	assert.equal(defaultStashBaseDir("/home/me"), "/home/me/.pi/agent/pi-stash");
+test("defaultStashBaseDir lives under Pi's configured agent directory", () => {
+	assert.equal(defaultStashBaseDir("/profiles/work"), "/profiles/work/pi-stash");
 });
 
 test("resolveStashPaths derives stash file and per-entry asset dir", () => {

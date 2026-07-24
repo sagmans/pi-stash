@@ -186,6 +186,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.dropInProgress) return;
 		if (this.mode === "list") this.handleListInput(data);
 		else this.handleDetailInput(data);
 		this.tui.requestRender();

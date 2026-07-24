@@ -1,5 +1,13 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -45,6 +53,28 @@ test("persistTmpImages copies a tmp image and rewrites the path", async () => {
 	const copiedImage = path.join(assetDir, "00-clip.png");
 	assert.ok(existsSync(copiedImage));
 	assert.equal(statSync(copiedImage).mode & 0o777, 0o600);
+});
+
+test("persistTmpImages recognizes spaced paths beside prose and punctuation", async () => {
+	const spacedRoot = path.join(scratch, "tmp root");
+	mkdirSync(spacedRoot);
+	const first = path.join(spacedRoot, "clip one.png");
+	const second = path.join(spacedRoot, "clip two.jpg");
+	writeFileSync(first, "one");
+	writeFileSync(second, "two");
+	const assetDir = path.join(scratch, "assets", "spaced-entry");
+
+	const result = await persistTmpImages({
+		text: `before:${first},middle(${second})after`,
+		assetDir,
+		tmpDir: spacedRoot,
+	});
+
+	assert.equal(result.count, 2);
+	assert.equal(
+		result.text,
+		`before:${path.join(assetDir, "00-clip one.png")},middle(${path.join(assetDir, "01-clip two.jpg")})after`,
+	);
 });
 
 test("persistTmpImages leaves repo/absolute paths untouched", async () => {
@@ -104,6 +134,31 @@ test("persistTmpImages handles multiple images with distinct copies", async () =
 	assert.equal(result.count, 2);
 	assert.ok(existsSync(path.join(assetDir, "00-a.png")));
 	assert.ok(existsSync(path.join(assetDir, "01-b.jpg")));
+});
+
+test("persistTmpImages removes every staged copy when a later copy fails", async () => {
+	const a = tmpImage("a.png");
+	const b = tmpImage("b.jpg");
+	const assetDir = path.join(scratch, "assets", "rollback-entry");
+	mkdirSync(path.join(assetDir, "01-b.jpg"), { recursive: true });
+
+	await assert.rejects(() => persistTmpImages({ text: `${a} ${b}`, assetDir, tmpDir: tmpRoot }));
+
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persistTmpImages repairs existing asset directory permissions", async () => {
+	const image = tmpImage("private.png");
+	const assetsRoot = path.join(scratch, "permissive-assets");
+	const assetDir = path.join(assetsRoot, "entry-5");
+	mkdirSync(assetDir, { recursive: true });
+	chmodSync(assetsRoot, 0o755);
+	chmodSync(assetDir, 0o755);
+
+	await persistTmpImages({ text: image, assetDir, tmpDir: tmpRoot });
+
+	assert.equal(statSync(assetsRoot).mode & 0o777, 0o700);
+	assert.equal(statSync(assetDir).mode & 0o777, 0o700);
 });
 
 test("removeAssetDir deletes the directory", async () => {

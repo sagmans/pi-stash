@@ -48,6 +48,8 @@ export type AddEntryInput = {
 	text: string;
 	message?: string;
 	assetCount?: number;
+	/** Older asset ids transferred into this entry and safe to remove after commit. */
+	cleanupIds?: readonly string[];
 	/** Caller-supplied id; generated when omitted. Lets a caller stage image
 	 * assets into assetDir(id) before the entry is persisted. */
 	id?: string;
@@ -58,6 +60,8 @@ export type LoadResult =
 	| { kind: "corrupt"; quarantinedTo?: string }
 	| { kind: "unsupported"; schemaVersion: number };
 
+export type StashWriter = (filePath: string, file: StashFile) => Promise<void>;
+
 export class StashStore {
 	private file: StashFile;
 	private unsupportedSchemaVersion: number | undefined;
@@ -67,6 +71,7 @@ export class StashStore {
 		private readonly paths: StashPaths,
 		loaded: LoadResult,
 		private readonly now: Clock = Date.now,
+		private readonly write: StashWriter = writeStashFile,
 	) {
 		this.file =
 			loaded.kind === "ready" ? loaded.file : createEmptyStashFile(paths.sanitized, now());
@@ -83,6 +88,10 @@ export class StashStore {
 		return this.file.entries.length;
 	}
 
+	get pendingAssetCleanupIds(): readonly string[] {
+		return this.file.pendingAssetCleanup;
+	}
+
 	async refresh(): Promise<void> {
 		await withStashLock(this.stashFile, () => this.reloadFresh());
 	}
@@ -94,6 +103,8 @@ export class StashStore {
 	async add(input: AddEntryInput): Promise<StashEntry> {
 		const id = input.id ?? createNewId();
 		assertSafeEntryId(id);
+		const cleanupIds = [...(input.cleanupIds ?? [])];
+		for (const cleanupId of cleanupIds) assertSafeEntryId(cleanupId);
 		return withStashLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
@@ -108,12 +119,14 @@ export class StashStore {
 			if (input.assetCount !== undefined && input.assetCount > 0) {
 				entry.assetCount = input.assetCount;
 			}
-			this.file = {
+			const nextFile = {
 				...this.file,
 				updatedAt: entry.createdAt,
 				entries: [entry, ...this.file.entries],
+				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, cleanupIds),
 			};
-			await writeStashFile(this.stashFile, this.file);
+			await this.write(this.stashFile, nextFile);
+			this.file = nextFile;
 			return entry;
 		});
 	}
@@ -122,26 +135,27 @@ export class StashStore {
 		selector: string | undefined,
 		beforeRemove?: (resolved: ResolvedEntry) => boolean,
 	): Promise<ResolvedEntry | undefined> {
-		return withStashLock(this.stashFile, async () => {
-			await this.reloadFresh();
-			this.assertWritable();
-			const resolved = resolveBySelector(this.file.entries, selector);
-			if (!resolved || (beforeRemove && !beforeRemove(resolved))) return undefined;
-			this.file = {
-				...this.file,
-				updatedAt: this.now(),
-				entries: this.file.entries.filter((_, index) => index !== resolved.index),
-			};
-			await writeStashFile(this.stashFile, this.file);
-			return resolved;
-		});
+		return this.remove(selector, false, beforeRemove);
 	}
 
 	async drop(selector: string | undefined): Promise<ResolvedEntry | undefined> {
-		// drop is identical to pop on disk; the caller decides whether to also
-		// remove the persisted asset dir. Keeping them separate makes intent at
-		// the call site explicit.
-		return this.pop(selector);
+		return this.remove(selector, true);
+	}
+
+	async completeAssetCleanup(id: string): Promise<void> {
+		assertSafeEntryId(id);
+		await withStashLock(this.stashFile, async () => {
+			await this.reloadFresh();
+			this.assertWritable();
+			if (!this.file.pendingAssetCleanup.includes(id)) return;
+			const nextFile = {
+				...this.file,
+				updatedAt: this.now(),
+				pendingAssetCleanup: this.file.pendingAssetCleanup.filter((cleanupId) => cleanupId !== id),
+			};
+			await this.write(this.stashFile, nextFile);
+			this.file = nextFile;
+		});
 	}
 
 	async clear(): Promise<string[]> {
@@ -149,12 +163,38 @@ export class StashStore {
 			await this.reloadFresh();
 			this.assertWritable();
 			const removedIds = this.file.entries.map((entry) => entry.id);
-			this.file = {
+			const nextFile = {
 				...createEmptyStashFile(this.paths.sanitized, this.now()),
 				updatedAt: this.now(),
+				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, removedIds),
 			};
-			await writeStashFile(this.stashFile, this.file);
+			await this.write(this.stashFile, nextFile);
+			this.file = nextFile;
 			return removedIds;
+		});
+	}
+
+	private async remove(
+		selector: string | undefined,
+		queueAssetCleanup: boolean,
+		beforeRemove?: (resolved: ResolvedEntry) => boolean,
+	): Promise<ResolvedEntry | undefined> {
+		return withStashLock(this.stashFile, async () => {
+			await this.reloadFresh();
+			this.assertWritable();
+			const resolved = resolveBySelector(this.file.entries, selector);
+			if (!resolved || (beforeRemove && !beforeRemove(resolved))) return undefined;
+			const nextFile = {
+				...this.file,
+				updatedAt: this.now(),
+				entries: this.file.entries.filter((_, index) => index !== resolved.index),
+				pendingAssetCleanup: queueAssetCleanup
+					? mergeCleanupIds(this.file.pendingAssetCleanup, [resolved.entry.id])
+					: this.file.pendingAssetCleanup,
+			};
+			await this.write(this.stashFile, nextFile);
+			this.file = nextFile;
+			return resolved;
 		});
 	}
 
@@ -180,14 +220,19 @@ export class StashStore {
 	}
 }
 
+function mergeCleanupIds(current: readonly string[], added: readonly string[]): string[] {
+	return [...new Set([...current, ...added])];
+}
+
 export async function loadStashStore(
 	paths: StashPaths,
 	now: Clock = Date.now,
+	write: StashWriter = writeStashFile,
 ): Promise<StashStore> {
 	const loaded = await withStashLock(paths.stashFile, () =>
 		readStashFile(paths.stashFile, paths.sanitized, now),
 	);
-	return new StashStore(paths, loaded, now);
+	return new StashStore(paths, loaded, now, write);
 }
 
 async function readStashFile(
@@ -344,24 +389,46 @@ async function releaseStashLock(lockPath: string, token: string): Promise<void> 
 
 async function reclaimStaleLock(lockPath: string): Promise<boolean> {
 	const reclaimPath = `${lockPath}${LOCK_RECLAIM_SUFFIX}`;
-	try {
-		await mkdir(reclaimPath, { mode: PRIVATE_DIR_MODE });
-	} catch (error) {
-		if (hasErrorCode(error, "EEXIST")) return false;
-		throw error;
-	}
+	const reclaimToken = await acquireReclaimGuard(reclaimPath);
+	if (!reclaimToken) return false;
 	try {
 		// Recheck only after winning the atomic reclamation guard. Without this
 		// guard, a second reclaimer could delete a new owner's replacement lock.
-		const stats = await stat(lockPath).catch(() => undefined);
-		if (!stats || Date.now() - stats.mtimeMs <= LOCK_STALE_MS) return false;
-		const owner = await readLockOwner(lockPath);
-		if (owner && (owner.host !== hostname() || isProcessAlive(owner.pid))) return false;
+		if (!(await isStaleAbandonedLock(lockPath))) return false;
 		await rm(lockPath, { force: true, recursive: true });
 		return true;
 	} finally {
-		await rm(reclaimPath, { force: true, recursive: true });
+		await releaseStashLock(reclaimPath, reclaimToken);
 	}
+}
+
+async function acquireReclaimGuard(reclaimPath: string): Promise<string | undefined> {
+	const token = createNewId();
+	try {
+		await mkdir(reclaimPath, { mode: PRIVATE_DIR_MODE });
+		try {
+			await chmod(reclaimPath, PRIVATE_DIR_MODE);
+			await writeLockOwner(reclaimPath, token);
+		} catch (error) {
+			await rm(reclaimPath, { force: true, recursive: true });
+			throw error;
+		}
+		return token;
+	} catch (error) {
+		if (!hasErrorCode(error, "EEXIST")) throw error;
+		// A crashed reclaimer must not permanently block every future writer.
+		if (await isStaleAbandonedLock(reclaimPath)) {
+			await rm(reclaimPath, { force: true, recursive: true });
+		}
+		return undefined;
+	}
+}
+
+async function isStaleAbandonedLock(lockPath: string): Promise<boolean> {
+	const stats = await stat(lockPath).catch(() => undefined);
+	if (!stats || Date.now() - stats.mtimeMs <= LOCK_STALE_MS) return false;
+	const owner = await readLockOwner(lockPath);
+	return !owner || (owner.host === hostname() && !isProcessAlive(owner.pid));
 }
 
 function isProcessAlive(pid: number): boolean {

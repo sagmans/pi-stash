@@ -57,12 +57,19 @@ test("add places newest entry at index 0 (LIFO)", async () => {
 	assert.equal(store.entries[1]?.text, "first");
 });
 
-test("add honors caller-supplied id and optional fields", async () => {
+test("add honors caller-supplied id and atomically queues transferred assets", async () => {
 	const store = await storeFor();
-	const entry = await store.add({ id: "fixed-id", text: "x", message: "m", assetCount: 3 });
+	const entry = await store.add({
+		id: "fixed-id",
+		text: "x",
+		message: "m",
+		assetCount: 3,
+		cleanupIds: ["restored-entry"],
+	});
 	assert.equal(entry.id, "fixed-id");
 	assert.equal(entry.message, "m");
 	assert.equal(entry.assetCount, 3);
+	assert.deepEqual(store.pendingAssetCleanupIds, ["restored-entry"]);
 });
 
 test("add rejects path-bearing entry ids", async () => {
@@ -104,12 +111,26 @@ test("pop returns undefined for unknown selector", async () => {
 	assert.equal(store.entryCount, 1);
 });
 
-test("drop removes and returns the entry", async () => {
-	const store = await storeFor();
-	await store.add({ text: "a" });
+test("drop removes the entry and durably queues its asset cleanup", async () => {
+	const paths = resolveStashPaths("/repo", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const entry = await store.add({ text: "a" });
 	const dropped = await store.drop(undefined);
 	assert.equal(dropped?.entry.text, "a");
 	assert.equal(store.entryCount, 0);
+	assert.deepEqual(store.pendingAssetCleanupIds, [entry.id]);
+	assert.deepEqual((await loadStashStore(paths, clock)).pendingAssetCleanupIds, [entry.id]);
+});
+
+test("completeAssetCleanup acknowledges only the completed id", async () => {
+	const store = await storeFor();
+	const first = await store.add({ text: "a" });
+	const second = await store.add({ text: "b" });
+	await store.clear();
+
+	await store.completeAssetCleanup(first.id);
+
+	assert.deepEqual(store.pendingAssetCleanupIds, [second.id]);
 });
 
 test("clear empties the store and returns removed ids", async () => {
@@ -119,6 +140,7 @@ test("clear empties the store and returns removed ids", async () => {
 	const ids = await store.clear();
 	assert.equal(ids.length, 2);
 	assert.equal(store.entryCount, 0);
+	assert.deepEqual(new Set(store.pendingAssetCleanupIds), new Set(ids));
 });
 
 test("clear reloads entries added by another store before returning asset ids", async () => {
@@ -251,6 +273,31 @@ test("reclaims a stale lock owned by a dead local process", async () => {
 	);
 	const staleTime = new Date(Date.now() - STALE_LOCK_AGE_MS);
 	utimesSync(lockPath, staleTime, staleTime);
+
+	await store.add({ text: "recovered" });
+
+	assert.equal(store.entries[0]?.text, "recovered");
+});
+
+test("reclaims an abandoned stale lock-reclamation guard", async () => {
+	const paths = resolveStashPaths("/abandoned-reclaim", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const lockPath = `${paths.stashFile}.lock`;
+	const reclaimPath = `${lockPath}.reclaim`;
+	for (const directory of [lockPath, reclaimPath]) {
+		mkdirSync(directory);
+		writeFileSync(
+			path.join(directory, "owner.json"),
+			JSON.stringify({
+				pid: DEAD_PROCESS_ID,
+				host: hostname(),
+				token: TEST_LOCK_TOKEN,
+				createdAt: new Date().toISOString(),
+			}),
+		);
+		const staleTime = new Date(Date.now() - STALE_LOCK_AGE_MS);
+		utimesSync(directory, staleTime, staleTime);
+	}
 
 	await store.add({ text: "recovered" });
 

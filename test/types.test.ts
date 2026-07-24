@@ -41,6 +41,18 @@ test("normalizeStashFile rejects wrong schema version and bad entries", () => {
 	assert.equal(normalizeStashFile({ ...base, schemaVersion: 999 }), undefined);
 	assert.equal(normalizeStashFile({ ...base, entries: [{ id: "x" }] }), undefined);
 	assert.equal(normalizeStashFile({ ...base, updatedAt: INVALID_DATE_TIMESTAMP }), undefined);
+	assert.equal(normalizeStashFile({ ...base, pendingAssetCleanup: ["../escape"] }), undefined);
+});
+
+test("normalizeStashFile defaults legacy cleanup state and preserves safe ids", () => {
+	const legacy: Record<string, unknown> = { ...createEmptyStashFile("--cwd", 1) };
+	delete legacy.pendingAssetCleanup;
+	assert.deepEqual(normalizeStashFile(legacy)?.pendingAssetCleanup, []);
+	assert.deepEqual(
+		normalizeStashFile({ ...legacy, pendingAssetCleanup: ["entry-1", "entry-1"] })
+			?.pendingAssetCleanup,
+		["entry-1"],
+	);
 });
 
 test("normalizeStashFile round-trips a valid file", () => {
@@ -50,6 +62,7 @@ test("normalizeStashFile round-trips a valid file", () => {
 		createdAt: 1,
 		updatedAt: 2,
 		entries: [VALID_ENTRY],
+		pendingAssetCleanup: ["old-entry"],
 	};
 	assert.deepEqual(normalizeStashFile(file), file);
 });

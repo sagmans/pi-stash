@@ -72,7 +72,7 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/pi-stash-herdr-smoke.XXXXXX")"
 smoke_home="$smoke_root/home"
 agent_dir="$smoke_root/agent"
-stash_dir="$smoke_home/.pi/agent/pi-stash"
+stash_dir="$agent_dir/pi-stash"
 umask 077
 mkdir -p -- "$stash_dir" "$agent_dir"
 chmod "$PRIVATE_DIR_MODE" "$smoke_home" "$agent_dir" "$stash_dir"

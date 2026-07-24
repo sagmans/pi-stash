@@ -1,6 +1,6 @@
 // pi-stash — stash the current editor draft to disk so it can be resumed later.
 //
-// Drafts are persisted per worktree under ~/.pi/agent/pi-stash/<sanitized-cwd>.json.
+// Drafts are persisted per worktree under <Pi agent dir>/pi-stash/<sanitized-cwd>.json.
 // Trigger surface:
 //   prefix+s        stash the current draft (clears the editor)
 //   prefix+shift+s  open the stash overlay (↑↓ move · Enter restore · →/space preview · d drop)
@@ -13,6 +13,8 @@
 // Stashed entries also render as a widget above the editor, mirroring how queued
 // steering/follow-up messages appear. Tmp-dir image paths are copied into the
 // stash so a restored draft never dangles; repo/absolute paths are left live.
+
+import path from "node:path";
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 
@@ -29,7 +31,7 @@ const STASH_ACTION_EVENT = "pi-stash:stash";
 const LIST_ACTION_EVENT = "pi-stash:list";
 const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before restoring";
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
-const ASSET_CLEANUP_FAILED_MESSAGE = "Dropped draft, but failed to remove persisted images";
+const ASSET_CLEANUP_FAILED_MESSAGE = "Draft removed, but failed to remove persisted images";
 const ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE =
 	"Stashed draft, but failed to remove older persisted images";
 
@@ -76,11 +78,34 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 	);
 }
 
+export type AssetDirRemover = (assetDir: string) => Promise<void>;
+
+export async function drainAssetCleanup(
+	ui: StashUi,
+	store: StashStore,
+	paths: ReturnType<typeof resolveStashPaths>,
+	remove: AssetDirRemover = removeAssetDir,
+	failureMessage = ASSET_CLEANUP_FAILED_MESSAGE,
+): Promise<void> {
+	let failed = false;
+	for (const id of [...store.pendingAssetCleanupIds]) {
+		try {
+			await remove(paths.assetDir(id));
+			await store.completeAssetCleanup(id);
+		} catch {
+			// Keeping the id in the ledger makes the cleanup retryable next session.
+			failed = true;
+		}
+	}
+	if (failed) ui.notify(failureMessage, "error");
+}
+
 export async function doStash(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
 	message?: string,
+	remove: AssetDirRemover = removeAssetDir,
 ): Promise<void> {
 	const text = ui.getEditorText();
 	if (text.trim().length === 0) {
@@ -105,18 +130,14 @@ export async function doStash(
 			text: persistedText,
 			message,
 			assetCount: count > 0 ? count : undefined,
+			cleanupIds: transferredAssetDirs.map((directory) => path.basename(directory)),
 		});
 	} catch (error) {
 		await removeAssetDir(assetDir);
 		throw error;
 	}
-	if (ui.getEditorText() === text) {
-		ui.setEditorText("");
-		const cleanup = await Promise.allSettled(transferredAssetDirs.map(removeAssetDir));
-		if (cleanup.some((result) => result.status === "rejected")) {
-			ui.notify(ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE, "error");
-		}
-	}
+	if (ui.getEditorText() === text) ui.setEditorText("");
+	await drainAssetCleanup(ui, store, paths, remove, ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE);
 	refreshWidget(ui, store);
 	ui.notify(
 		count > 0 ? `Stashed [0] · ${count} image${count > 1 ? "s" : ""} persisted` : "Stashed [0]",
@@ -168,12 +189,8 @@ export async function openOverlay(
 						session.ui.notify("Entry already gone", "warning");
 						return false;
 					}
-					try {
-						await removeAssetDir(paths.assetDir(entry.id));
-					} catch {
-						session.ui.notify(ASSET_CLEANUP_FAILED_MESSAGE, "error");
-					}
 					refreshWidget(session.ui, store);
+					await drainAssetCleanup(session.ui, store, paths);
 					session.ui.notify(`Dropped [${dropped.index}]`, "info");
 					return true;
 				},
@@ -209,16 +226,29 @@ async function restoreEntry(
 	missingMessage: string,
 ): Promise<void> {
 	let editorBlocked = false;
-	const resolved = await store.pop(selector, (candidate) => {
-		if (!editorIsReadyForRestore(ui)) {
-			editorBlocked = true;
-			return false;
+	let restoredText: string | undefined;
+	const priorText = ui.getEditorText();
+	let resolved: ResolvedEntry | undefined;
+	try {
+		resolved = await store.pop(selector, (candidate) => {
+			if (!editorIsReadyForRestore(ui)) {
+				editorBlocked = true;
+				return false;
+			}
+			// This callback runs synchronously inside the store lock after its fresh
+			// read, leaving no await where new typing could be overwritten.
+			restoredText = candidate.entry.text;
+			ui.setEditorText(restoredText);
+			return true;
+		});
+	} catch (error) {
+		// The editor is not transactional. Roll it back only when the user has not
+		// typed since the candidate was shown while the durable write was pending.
+		if (restoredText !== undefined && ui.getEditorText() === restoredText) {
+			ui.setEditorText(priorText);
 		}
-		// This callback runs synchronously inside the store lock after its fresh
-		// read, leaving no await where new typing could be overwritten.
-		ui.setEditorText(candidate.entry.text);
-		return true;
-	});
+		throw error;
+	}
 	if (editorBlocked) return;
 	if (!resolved) {
 		ui.notify(missingMessage, "warning");
@@ -248,14 +278,15 @@ export async function doDrop(
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
 	selector?: string,
+	remove: AssetDirRemover = removeAssetDir,
 ): Promise<void> {
 	const resolved = await store.drop(selector);
 	if (!resolved) {
 		ui.notify(selector ? `No stash entry matching "${selector}"` : "No stashed drafts", "warning");
 		return;
 	}
-	await removeAssetDir(paths.assetDir(resolved.entry.id));
 	refreshWidget(ui, store);
+	await drainAssetCleanup(ui, store, paths, remove);
 	ui.notify(`Dropped [${resolved.index}]`, "info");
 }
 
@@ -263,6 +294,7 @@ export async function doClear(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
+	remove: AssetDirRemover = removeAssetDir,
 ): Promise<void> {
 	await store.refresh();
 	if (store.entryCount === 0) {
@@ -272,8 +304,8 @@ export async function doClear(
 	const ok = await ui.confirm("Clear stash?", "Delete every stashed draft for this worktree?");
 	if (!ok) return;
 	const ids = await store.clear();
-	await Promise.all(ids.map((id) => removeAssetDir(paths.assetDir(id))));
 	refreshWidget(ui, store);
+	await drainAssetCleanup(ui, store, paths, remove);
 	ui.notify(`Cleared ${ids.length} draft${ids.length === 1 ? "" : "s"}`, "info");
 }
 
@@ -282,6 +314,8 @@ type ActiveSession = {
 	store: StashStore;
 	paths: ReturnType<typeof resolveStashPaths>;
 	stopBinding: () => void;
+	accepting: boolean;
+	pending: Promise<void>;
 };
 
 type SessionCtx = { cwd: string; mode: string; hasUI: boolean };
@@ -297,7 +331,7 @@ function parseArg(args: unknown): string | undefined {
 function makeRequireActive(getter: ActiveGetter): ActiveResolver {
 	return (ctx) => {
 		const active = getter();
-		if (!active) {
+		if (!active?.accepting) {
 			if (ctx && "ui" in ctx && ctx.ui && typeof (ctx.ui as StashUi).notify === "function") {
 				(ctx.ui as StashUi).notify("pi-stash is not ready yet", "warning");
 			}
@@ -307,6 +341,15 @@ function makeRequireActive(getter: ActiveGetter): ActiveResolver {
 	};
 }
 
+function enqueueOperation(active: ActiveSession, operation: () => Promise<void>): Promise<void> {
+	if (!active.accepting) return Promise.resolve();
+	const pending = active.pending.then(operation);
+	// Keep queue usable after a failed command while returning the original
+	// rejection to its caller for normal command/prefix error reporting.
+	active.pending = pending.catch(() => {});
+	return pending;
+}
+
 /** Slash commands. Each resolves the active session, then delegates. */
 function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void {
 	pi.registerCommand("stash", {
@@ -314,7 +357,9 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await doStash(session.ui, session.store, session.paths, parseArg(args));
+			await enqueueOperation(session, () =>
+				doStash(session.ui, session.store, session.paths, parseArg(args)),
+			);
 		},
 	});
 	pi.registerCommand("stash-list", {
@@ -322,10 +367,12 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await openOverlay(
-				{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: session.ui },
-				session.store,
-				session.paths,
+			await enqueueOperation(session, () =>
+				openOverlay(
+					{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: session.ui },
+					session.store,
+					session.paths,
+				),
 			);
 		},
 	});
@@ -334,7 +381,9 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await doPop(session.ui, session.store, session.paths, parseArg(args));
+			await enqueueOperation(session, () =>
+				doPop(session.ui, session.store, session.paths, parseArg(args)),
+			);
 		},
 	});
 	pi.registerCommand("stash-drop", {
@@ -342,7 +391,9 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await doDrop(session.ui, session.store, session.paths, parseArg(args));
+			await enqueueOperation(session, () =>
+				doDrop(session.ui, session.store, session.paths, parseArg(args)),
+			);
 		},
 	});
 	pi.registerCommand("stash-clear", {
@@ -350,7 +401,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await doClear(session.ui, session.store, session.paths);
+			await enqueueOperation(session, () => doClear(session.ui, session.store, session.paths));
 		},
 	});
 }
@@ -371,20 +422,27 @@ function reportActionFailure(ui: StashUi, action: string, operation: Promise<voi
 
 function fireStash(getter: ActiveGetter): void {
 	const active = getter();
-	if (active)
-		reportActionFailure(active.ui, "stash", doStash(active.ui, active.store, active.paths));
+	if (active?.accepting) {
+		reportActionFailure(
+			active.ui,
+			"stash",
+			enqueueOperation(active, () => doStash(active.ui, active.store, active.paths)),
+		);
+	}
 }
 
 function fireList(getter: ActiveGetter, ctx: SessionCtx): void {
 	const active = getter();
-	if (!active) return;
+	if (!active?.accepting) return;
 	reportActionFailure(
 		active.ui,
 		"open stash list",
-		openOverlay(
-			{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: active.ui },
-			active.store,
-			active.paths,
+		enqueueOperation(active, () =>
+			openOverlay(
+				{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: active.ui },
+				active.store,
+				active.paths,
+			),
 		),
 	);
 }
@@ -398,6 +456,7 @@ export function installPiStash(pi: ExtensionAPI): void {
 
 		const paths = resolveStashPaths(ctx.cwd);
 		const store = await loadStashStore(paths);
+		await drainAssetCleanup(ctx.ui as StashUi, store, paths);
 		refreshWidget(ctx.ui as StashUi, store);
 
 		const stopBinding = startStashBinding({
@@ -411,15 +470,26 @@ export function installPiStash(pi: ExtensionAPI): void {
 			},
 		});
 
-		active = { ui: ctx.ui as StashUi, store, paths, stopBinding };
+		active = {
+			ui: ctx.ui as StashUi,
+			store,
+			paths,
+			stopBinding,
+			accepting: true,
+			pending: Promise.resolve(),
+		};
 	});
 
-	pi.on("session_shutdown", () => {
-		active?.stopBinding();
-		// Clear the widget so a follow-up session in the same process does not
-		// show a stale list belonging to the previous worktree.
-		active?.ui.setWidget(STASH_WIDGET_KEY, undefined);
-		active = undefined;
+	pi.on("session_shutdown", async () => {
+		const closing = active;
+		if (!closing) return;
+		closing.accepting = false;
+		closing.stopBinding();
+		await closing.pending;
+		// Clear the widget only after queued work settles, or a late refresh can
+		// leak the old worktree's state into the next session.
+		closing.ui.setWidget(STASH_WIDGET_KEY, undefined);
+		if (active === closing) active = undefined;
 	});
 
 	registerStashCommands(pi, requireActiveForCommand);

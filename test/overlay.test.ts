@@ -88,7 +88,7 @@ const KEY_GLYPH: Record<string, string> = {
 const matcher: KeyMatcher = (data, action) => KEY_GLYPH[action] === data;
 
 type Calls = { restore: StashEntry[]; drop: StashEntry[]; close: number };
-function harness(entries: StashEntry[], dropResult = true) {
+function harness(entries: StashEntry[], dropResult: boolean | Promise<boolean> = true) {
 	const calls: Calls = { restore: [], drop: [], close: 0 };
 	const renders: number[] = [];
 	const overlay = new StashOverlayComponent(
@@ -158,6 +158,26 @@ test("detail: failed drop keeps the entry visible", async () => {
 
 	assert.equal(calls.drop.length, 1);
 	assert.ok(overlay.render(60).some((line) => line.includes("alpha")));
+});
+
+test("detail: ignores every action while drop is pending", async () => {
+	let finishDrop: ((value: boolean) => void) | undefined;
+	const pendingDrop = new Promise<boolean>((resolve) => {
+		finishDrop = resolve;
+	});
+	const { overlay, calls } = harness([entry("a", "alpha")], pendingDrop);
+	overlay.handleInput(" ");
+	overlay.handleInput("d");
+
+	overlay.handleInput("E");
+	overlay.handleInput("X");
+	overlay.handleInput("d");
+
+	assert.equal(calls.restore.length, 0);
+	assert.equal(calls.close, 0);
+	assert.equal(calls.drop.length, 1);
+	finishDrop?.(true);
+	await new Promise((resolve) => setImmediate(resolve));
 });
 
 test("detail: cancel returns to list without dropping", () => {

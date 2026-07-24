@@ -5,11 +5,12 @@
 // all just distinct cwd values, so keying on cwd covers every case uniformly
 // without any git discovery. The cwd is flattened into a filename-safe string
 // by escaping segments and joining them with "--" (e.g. "/Users/me/repo" ->
-// "v2--Users--me--repo"), which stays human-readable in `ls ~/.pi/agent/pi-stash`.
+// "v2--Users--me--repo"), which stays human-readable in the Pi agent directory.
 
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { assertSafeEntryId } from "./types.ts";
 
@@ -68,8 +69,8 @@ function truncateToUtf8Bytes(value: string, maxBytes: number): string {
 	return result;
 }
 
-export function defaultStashBaseDir(homeDir: string = homedir()): string {
-	return path.join(homeDir, ".pi", "agent", "pi-stash");
+export function defaultStashBaseDir(agentDir: string = getAgentDir()): string {
+	return path.join(agentDir, "pi-stash");
 }
 
 export type StashPaths = {

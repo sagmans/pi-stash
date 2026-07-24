@@ -37,6 +37,8 @@ export type StashFile = {
 	createdAt: number;
 	updatedAt: number;
 	entries: StashEntry[];
+	/** Asset directory ids awaiting durable best-effort removal. */
+	pendingAssetCleanup: string[];
 };
 
 export type Clock = () => number;
@@ -52,6 +54,7 @@ export function createEmptyStashFile(cwd: string, now: number): StashFile {
 		createdAt: now,
 		updatedAt: now,
 		entries: [],
+		pendingAssetCleanup: [],
 	};
 }
 
@@ -98,6 +101,13 @@ export function normalizeStashFile(raw: unknown): StashFile | undefined {
 		if (!entry) return undefined;
 		entries.push(entry);
 	}
+	const rawCleanup = raw.pendingAssetCleanup ?? [];
+	if (!Array.isArray(rawCleanup)) return undefined;
+	const pendingAssetCleanup: string[] = [];
+	for (const id of rawCleanup) {
+		if (typeof id !== "string" || !isSafeEntryId(id)) return undefined;
+		if (!pendingAssetCleanup.includes(id)) pendingAssetCleanup.push(id);
+	}
 
 	return {
 		schemaVersion: STASH_SCHEMA_VERSION,
@@ -105,6 +115,7 @@ export function normalizeStashFile(raw: unknown): StashFile | undefined {
 		createdAt: raw.createdAt,
 		updatedAt: raw.updatedAt,
 		entries,
+		pendingAssetCleanup,
 	};
 }
 

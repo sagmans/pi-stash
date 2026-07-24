@@ -83,6 +83,21 @@ test("dispatching a claim's action event fires its callback", () => {
 	assert.deepEqual(fired, ["s"]);
 });
 
+test("ignores action events before a claim becomes active", () => {
+	const bus = createBus();
+	const fired: string[] = [];
+	startStashBinding({
+		events: bus,
+		claims: [claim("s", "pi-stash:stash", fired)],
+		onInert: () => {},
+		availabilityTimeoutMs: 1000,
+	});
+
+	bus.emit("pi-stash:stash", {});
+
+	assert.deepEqual(fired, []);
+});
+
 test("goes inert when availability times out and never registers later", async () => {
 	const bus = createBus();
 	const fired: string[] = [];
@@ -106,10 +121,12 @@ test("goes inert when availability times out and never registers later", async (
 	assert.equal(inert, true);
 
 	bus.emit("prefix-keybindings:available", { available: true });
+	bus.emit("pi-stash:stash", {});
 	assert.equal(
 		bus.emitted.some((entry) => entry.event === "prefix-keybindings:register"),
 		false,
 	);
+	assert.deepEqual(fired, []);
 });
 
 test("cleanup detaches listeners: late available and late action are no-ops", () => {

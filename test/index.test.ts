@@ -3,15 +3,21 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
 import {
 	doClear,
 	doDrop,
 	doPop,
 	doStash,
+	drainAssetCleanup,
+	installPiStash,
 	isSupportedSession,
 	refreshWidget,
 	type StashUi,
 } from "../index.ts";
+import { removeAssetDir } from "../src/assets.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
@@ -52,6 +58,11 @@ function fakeUi(options: FakeUiOptions = {}): StashUi & {
 		},
 	};
 }
+
+const ASYNC_SETTLE_MS = 100;
+
+type ExtensionHandler = (event: unknown, ctx: unknown) => unknown;
+type CommandHandler = (args: string, ctx: unknown) => Promise<void>;
 
 let baseDir: string;
 
@@ -169,10 +180,16 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	const originalAssetDir = paths.assetDir(original.id);
 
 	await doPop(ui, store, paths);
-	await doStash(ui, store, paths);
+	let queuedAtRemoval: readonly string[] = [];
+	await doStash(ui, store, paths, undefined, async (assetDir) => {
+		queuedAtRemoval = [...store.pendingAssetCleanupIds];
+		await removeAssetDir(assetDir);
+	});
 	const transferred = store.entries[0];
 	assert.ok(transferred);
 
+	assert.deepEqual(queuedAtRemoval, [original.id]);
+	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(originalAssetDir), false);
 	assert.equal(existsSync(paths.assetDir(transferred.id)), true);
 	await doDrop(ui, store, paths);
@@ -236,6 +253,52 @@ test("doPop preserves a nonempty editor and leaves the stash untouched", async (
 	assert.ok(ui.notifs.some((notification) => notification.type === "warning"));
 });
 
+test("doPop restores the prior editor when durable removal fails", async () => {
+	const paths = resolveStashPaths("/restore-failure", baseDir);
+	const writer = await loadStashStore(paths);
+	await writer.add({ text: "stashed" });
+	const store = await loadStashStore(paths, Date.now, async () => {
+		throw new Error("write failed");
+	});
+	const ui = fakeUi();
+
+	await assert.rejects(() => doPop(ui, store, paths), /write failed/);
+
+	assert.equal(ui.editorText, "");
+	assert.equal(store.entryCount, 1);
+	assert.equal((await loadStashStore(paths)).entryCount, 1);
+});
+
+test("doPop does not overwrite typing entered while a failed removal is pending", async () => {
+	const paths = resolveStashPaths("/restore-race", baseDir);
+	const writer = await loadStashStore(paths);
+	await writer.add({ text: "stashed" });
+	let rejectWrite: ((error: Error) => void) | undefined;
+	let signalWriteStarted: (() => void) | undefined;
+	const writeStarted = new Promise<void>((resolve) => {
+		signalWriteStarted = resolve;
+	});
+	const store = await loadStashStore(
+		paths,
+		Date.now,
+		() =>
+			new Promise<void>((_resolve, reject) => {
+				rejectWrite = reject;
+				signalWriteStarted?.();
+			}),
+	);
+	const ui = fakeUi();
+
+	const popping = doPop(ui, store, paths);
+	await writeStarted;
+	ui.editorText = "new typing";
+	rejectWrite?.(new Error("write failed"));
+	await assert.rejects(() => popping, /write failed/);
+
+	assert.equal(ui.editorText, "new typing");
+	assert.equal(store.entryCount, 1);
+});
+
 test("doPop warns when selector matches nothing", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -256,6 +319,30 @@ test("doDrop removes the entry and its asset dir", async () => {
 	await doDrop(fakeUi(), store, paths);
 
 	assert.equal(store.entryCount, 0);
+	assert.equal(existsSync(paths.assetDir(entry.id)), false);
+});
+
+test("doDrop keeps failed asset cleanup durable and retries it", async () => {
+	const paths = resolveStashPaths("/drop-cleanup", baseDir);
+	const store = await loadStashStore(paths);
+	const entry = await store.add({ text: "x", assetCount: 1 });
+	mkdirSync(paths.assetDir(entry.id), { recursive: true });
+	writeFileSync(path.join(paths.assetDir(entry.id), "00-a.png"), "x");
+	const ui = fakeUi();
+	refreshWidget(ui, store);
+
+	await doDrop(ui, store, paths, undefined, async () => {
+		throw new Error("remove failed");
+	});
+
+	assert.equal(store.entryCount, 0);
+	assert.deepEqual(store.pendingAssetCleanupIds, [entry.id]);
+	assert.equal(existsSync(paths.assetDir(entry.id)), true);
+	assert.equal(ui.widgets.has("pi-stash"), false);
+	assert.ok(ui.notifs.some((notification) => notification.message.includes("failed to remove")));
+
+	await drainAssetCleanup(ui, store, paths, removeAssetDir);
+	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 });
 
@@ -286,6 +373,29 @@ test("doClear sees drafts added by another store after startup", async () => {
 	assert.ok(ui.notifs.some((notification) => notification.message === "Cleared 1 draft"));
 });
 
+test("doClear reports partial asset cleanup and preserves failed work", async () => {
+	const paths = resolveStashPaths("/clear-cleanup", baseDir);
+	const store = await loadStashStore(paths);
+	const failed = await store.add({ text: "failed" });
+	const removed = await store.add({ text: "removed" });
+	for (const entry of [failed, removed]) {
+		mkdirSync(paths.assetDir(entry.id), { recursive: true });
+		writeFileSync(path.join(paths.assetDir(entry.id), "00-a.png"), "x");
+	}
+	const ui = fakeUi({ confirmResult: true });
+
+	await doClear(ui, store, paths, async (assetDir) => {
+		if (assetDir === paths.assetDir(failed.id)) throw new Error("remove failed");
+		await removeAssetDir(assetDir);
+	});
+
+	assert.equal(store.entryCount, 0);
+	assert.deepEqual(store.pendingAssetCleanupIds, [failed.id]);
+	assert.equal(existsSync(paths.assetDir(failed.id)), true);
+	assert.equal(existsSync(paths.assetDir(removed.id)), false);
+	assert.ok(ui.notifs.some((notification) => notification.message.includes("failed to remove")));
+});
+
 test("doClear is a no-op when the user declines", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -305,4 +415,55 @@ test("refreshWidget populates with entries and clears when empty", async () => {
 	await store.add({ text: "x" });
 	refreshWidget(ui, store);
 	assert.ok(ui.widgets.has("pi-stash"));
+});
+
+test("prefix operations serialize and session shutdown waits for them", async () => {
+	const handlers = new Map<string, ExtensionHandler>();
+	const commands = new Map<string, CommandHandler>();
+	const eventHandlers = new Map<string, Set<(payload?: unknown) => void>>();
+	const events = {
+		emit(event: string, payload?: unknown): void {
+			eventHandlers.get(event)?.forEach((handler) => {
+				handler(payload);
+			});
+			if (event === "prefix-keybindings:query") this.emit("prefix-keybindings:available");
+		},
+		on(event: string, handler: (payload?: unknown) => void): () => void {
+			const registered = eventHandlers.get(event) ?? new Set();
+			registered.add(handler);
+			eventHandlers.set(event, registered);
+			return () => registered.delete(handler);
+		},
+	};
+	const pi = {
+		on(event: string, handler: ExtensionHandler): void {
+			handlers.set(event, handler);
+		},
+		registerCommand(name: string, options: { handler: CommandHandler }): void {
+			commands.set(name, options.handler);
+		},
+		events,
+	} as unknown as ExtensionAPI;
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		installPiStash(pi);
+		const ui = fakeUi();
+		const ctx = { cwd: "/queued-repo", mode: "tui", hasUI: true, ui };
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		ui.editorText = "one draft";
+
+		events.emit("pi-stash:stash");
+		events.emit("pi-stash:stash");
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, ASYNC_SETTLE_MS));
+
+		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+		const store = await loadStashStore(paths);
+		assert.equal(store.entryCount, 1);
+		assert.equal(ui.widgets.has("pi-stash"), false);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
 });
