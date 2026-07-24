@@ -41,6 +41,7 @@ test("normalizeStashFile rejects wrong schema version and bad entries", () => {
 	assert.equal(normalizeStashFile({ ...base, schemaVersion: 999 }), undefined);
 	assert.equal(normalizeStashFile({ ...base, entries: [{ id: "x" }] }), undefined);
 	assert.equal(normalizeStashFile({ ...base, updatedAt: INVALID_DATE_TIMESTAMP }), undefined);
+	assert.equal(normalizeStashFile({ ...base, pendingAssetCleanup: null }), undefined);
 	assert.equal(normalizeStashFile({ ...base, pendingAssetCleanup: ["../escape"] }), undefined);
 });
 

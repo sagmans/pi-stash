@@ -101,7 +101,7 @@ export function normalizeStashFile(raw: unknown): StashFile | undefined {
 		if (!entry) return undefined;
 		entries.push(entry);
 	}
-	const rawCleanup = raw.pendingAssetCleanup ?? [];
+	const rawCleanup = raw.pendingAssetCleanup === undefined ? [] : raw.pendingAssetCleanup;
 	if (!Array.isArray(rawCleanup)) return undefined;
 	const pendingAssetCleanup: string[] = [];
 	for (const id of rawCleanup) {
