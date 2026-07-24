@@ -59,10 +59,41 @@ function fakeUi(options: FakeUiOptions = {}): StashUi & {
 	};
 }
 
-const ASYNC_SETTLE_MS = 100;
+function extensionHarness(): {
+	pi: ExtensionAPI;
+	handlers: Map<string, ExtensionHandler>;
+	events: {
+		emit(event: string, payload?: unknown): void;
+		on(event: string, handler: (payload?: unknown) => void): () => void;
+	};
+} {
+	const handlers = new Map<string, ExtensionHandler>();
+	const eventHandlers = new Map<string, Set<(payload?: unknown) => void>>();
+	const events = {
+		emit(event: string, payload?: unknown): void {
+			eventHandlers.get(event)?.forEach((handler) => {
+				handler(payload);
+			});
+			if (event === "prefix-keybindings:query") this.emit("prefix-keybindings:available");
+		},
+		on(event: string, handler: (payload?: unknown) => void): () => void {
+			const registered = eventHandlers.get(event) ?? new Set();
+			registered.add(handler);
+			eventHandlers.set(event, registered);
+			return () => registered.delete(handler);
+		},
+	};
+	const pi = {
+		on(event: string, handler: ExtensionHandler): void {
+			handlers.set(event, handler);
+		},
+		registerCommand(): void {},
+		events,
+	} as unknown as ExtensionAPI;
+	return { pi, handlers, events };
+}
 
 type ExtensionHandler = (event: unknown, ctx: unknown) => unknown;
-type CommandHandler = (args: string, ctx: unknown) => Promise<void>;
 
 let baseDir: string;
 
@@ -418,32 +449,7 @@ test("refreshWidget populates with entries and clears when empty", async () => {
 });
 
 test("prefix operations serialize and session shutdown waits for them", async () => {
-	const handlers = new Map<string, ExtensionHandler>();
-	const commands = new Map<string, CommandHandler>();
-	const eventHandlers = new Map<string, Set<(payload?: unknown) => void>>();
-	const events = {
-		emit(event: string, payload?: unknown): void {
-			eventHandlers.get(event)?.forEach((handler) => {
-				handler(payload);
-			});
-			if (event === "prefix-keybindings:query") this.emit("prefix-keybindings:available");
-		},
-		on(event: string, handler: (payload?: unknown) => void): () => void {
-			const registered = eventHandlers.get(event) ?? new Set();
-			registered.add(handler);
-			eventHandlers.set(event, registered);
-			return () => registered.delete(handler);
-		},
-	};
-	const pi = {
-		on(event: string, handler: ExtensionHandler): void {
-			handlers.set(event, handler);
-		},
-		registerCommand(name: string, options: { handler: CommandHandler }): void {
-			commands.set(name, options.handler);
-		},
-		events,
-	} as unknown as ExtensionAPI;
+	const { pi, handlers, events } = extensionHarness();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = baseDir;
 	try {
@@ -456,12 +462,38 @@ test("prefix operations serialize and session shutdown waits for them", async ()
 		events.emit("pi-stash:stash");
 		events.emit("pi-stash:stash");
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-		await new Promise((resolve) => setTimeout(resolve, ASYNC_SETTLE_MS));
 
 		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
 		const store = await loadStashStore(paths);
 		assert.equal(store.entryCount, 1);
 		assert.equal(ui.widgets.has("pi-stash"), false);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("session startup retries durable asset cleanup", async () => {
+	const { pi, handlers } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		const cwd = "/cleanup-retry";
+		const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
+		const seed = await loadStashStore(paths);
+		const entry = await seed.add({ text: "removed", assetCount: 1 });
+		mkdirSync(paths.assetDir(entry.id), { recursive: true });
+		writeFileSync(path.join(paths.assetDir(entry.id), "00-a.png"), "x");
+		await seed.drop(entry.id);
+
+		installPiStash(pi);
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		assert.equal(existsSync(paths.assetDir(entry.id)), false);
+		assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
