@@ -74,7 +74,7 @@ smoke_home="$smoke_root/home"
 agent_dir="$smoke_root/agent"
 stash_dir="$agent_dir/pi-stash"
 umask 077
-mkdir -p -- "$stash_dir" "$agent_dir"
+mkdir -p -- "$smoke_home" "$stash_dir"
 chmod "$PRIVATE_DIR_MODE" "$smoke_home" "$agent_dir" "$stash_dir"
 
 stash_key="$(
