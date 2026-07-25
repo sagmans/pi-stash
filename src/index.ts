@@ -35,6 +35,7 @@ import {
 	loadStashStore,
 	type RestoredAssetCleanup,
 	type StashStore,
+	UnsupportedStashSchemaError,
 } from "./store.ts";
 import { sanitizeTerminalText } from "./terminal.ts";
 import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
@@ -101,6 +102,13 @@ export type AssetDirRemover = (assetDir: string) => Promise<void>;
 
 function safeNotify(ui: StashUi, message: string, type?: "info" | "warning" | "error"): void {
 	ui.notify(sanitizeTerminalText(message), type);
+}
+
+function showUnavailable(ui: StashUi, reason: string): void {
+	const title = ui.theme.fg("error", " Stash unavailable");
+	ui.setWidget(STASH_WIDGET_KEY, [
+		`${title} ${ui.theme.fg("muted", sanitizeTerminalText(reason))}`,
+	]);
 }
 
 function committedMutation<Result>(error: unknown): CommittedMutationError<Result> | undefined {
@@ -552,6 +560,7 @@ type ActiveSession = {
 	abort: AbortController;
 	accepting: boolean;
 	pending: Promise<void>;
+	unavailableReason?: string;
 };
 
 type SessionCtx = { cwd: string; mode: string; hasUI: boolean };
@@ -564,9 +573,19 @@ function parseArg(args: unknown): string | undefined {
 }
 
 /** Guard for command handlers: warns and returns nothing before session_start. */
-function makeRequireActive(getter: ActiveGetter): ActiveResolver {
+function makeRequireActive(
+	getter: ActiveGetter,
+	getStartupUnavailableReason: () => string | undefined,
+): ActiveResolver {
 	return (ctx) => {
 		const active = getter();
+		const unavailableReason = active?.unavailableReason ?? getStartupUnavailableReason();
+		if (unavailableReason) {
+			if (ctx && "ui" in ctx && ctx.ui && typeof (ctx.ui as StashUi).notify === "function") {
+				safeNotify(ctx.ui as StashUi, unavailableReason, "error");
+			}
+			return undefined;
+		}
 		if (!active?.accepting) {
 			if (ctx && "ui" in ctx && ctx.ui && typeof (ctx.ui as StashUi).notify === "function") {
 				safeNotify(ctx.ui as StashUi, "pi-stash is not ready yet", "warning");
@@ -582,7 +601,20 @@ function enqueueOperation(
 	operation: (signal: AbortSignal) => Promise<void>,
 ): Promise<void> {
 	if (!active.accepting) return Promise.resolve();
-	const pending = active.pending.then(() => operation(active.abort.signal));
+	if (active.unavailableReason) {
+		safeNotify(active.ui, active.unavailableReason, "error");
+		return Promise.resolve();
+	}
+	const pending = active.pending.then(async () => {
+		try {
+			await operation(active.abort.signal);
+		} catch (error) {
+			if (!(error instanceof UnsupportedStashSchemaError)) throw error;
+			active.unavailableReason = error.message;
+			safeNotify(active.ui, error.message, "error");
+			showUnavailable(active.ui, error.message);
+		}
+	});
 	// Keep queue usable after a failed command while returning the original
 	// rejection to its caller for normal command/prefix error reporting.
 	active.pending = pending.catch(() => {});
@@ -712,14 +744,23 @@ export type PiStashInstallOptions = {
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
 	let active: ActiveSession | undefined;
-	const requireActiveForCommand = makeRequireActive(() => active);
+	let startupUnavailableReason: string | undefined;
+	const requireActiveForCommand = makeRequireActive(
+		() => active,
+		() => startupUnavailableReason,
+	);
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!isSupportedSession(ctx)) return;
 
+		startupUnavailableReason = undefined;
 		const baseDir = defaultStashBaseDir();
 		const paths = resolveStashPaths(ctx.cwd, baseDir);
+		let store: StashStore;
 		try {
+			// Detect newer data before legacy migration so no recovery path can
+			// mutate or obscure a stash this extension cannot interpret.
+			store = await loadStashStore(paths);
 			const migration = await migrateLegacyStash(
 				ctx.cwd,
 				baseDir,
@@ -731,22 +772,22 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 					"Migrated legacy pi-stash data to the configured Pi agent directory",
 					"info",
 				);
+				store = await loadStashStore(paths);
 			}
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : "unknown legacy migration failure";
-			safeNotify(ctx.ui as StashUi, `pi-stash unavailable: ${reason}`, "error");
-			return;
-		}
-		let store: StashStore;
-		try {
-			store = await loadStashStore(paths);
 			const reconciliation = await reconcileMutationIntents(paths, store);
 			if (reconciliation.recoveredRestores > 0) {
 				safeNotify(ctx.ui as StashUi, RESTORE_RECOVERED_MESSAGE, "warning");
 			}
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : "unknown recovery failure";
-			safeNotify(ctx.ui as StashUi, `pi-stash unavailable: ${reason}`, "error");
+			const reason =
+				error instanceof Error ? error.message : "pi-stash unavailable: unknown startup failure";
+			startupUnavailableReason = reason.startsWith("pi-stash unavailable:")
+				? reason
+				: `pi-stash unavailable: ${reason}`;
+			safeNotify(ctx.ui as StashUi, startupUnavailableReason, "error");
+			if (error instanceof UnsupportedStashSchemaError) {
+				showUnavailable(ctx.ui as StashUi, startupUnavailableReason);
+			}
 			return;
 		}
 		await drainAssetCleanup(ctx.ui as StashUi, store, paths);

@@ -58,6 +58,8 @@ const PENDING_STASH_ID_MESSAGE = "stash id pending asset cleanup";
 const COMMITTED_MUTATION_ERROR_MESSAGE = "stash mutation committed but lock release failed";
 const MUTATION_AND_UNLOCK_ERROR_MESSAGE = "stash mutation and lock release both failed";
 const LOCK_GENERATION_CHANGED_MESSAGE = "stash lock generation changed before release";
+const UNSUPPORTED_SCHEMA_GUIDANCE =
+	"Upgrade pi-stash before using this stash, or export the stash file for safe recovery.";
 
 type LockOwner = {
 	pid: number;
@@ -116,9 +118,20 @@ export class CommittedMutationError<Result> extends Error {
 	}
 }
 
+export class UnsupportedStashSchemaError extends Error {
+	constructor(
+		readonly detectedVersion: number,
+		readonly supportedVersion = STASH_SCHEMA_VERSION,
+	) {
+		super(
+			`pi-stash unavailable: stash data uses schema version ${detectedVersion}; this extension supports schema versions through ${supportedVersion}. ${UNSUPPORTED_SCHEMA_GUIDANCE}`,
+		);
+		this.name = "UnsupportedStashSchemaError";
+	}
+}
+
 export class StashStore {
 	private file: StashFile;
-	private unsupportedSchemaVersion: number | undefined;
 	private readonly stashFile: string;
 
 	constructor(
@@ -127,10 +140,11 @@ export class StashStore {
 		private readonly now: Clock = Date.now,
 		private readonly write: StashWriter = writeStashFile,
 	) {
+		if (loaded.kind === "unsupported") {
+			throw new UnsupportedStashSchemaError(loaded.schemaVersion);
+		}
 		this.file =
 			loaded.kind === "ready" ? loaded.file : createEmptyStashFile(paths.sanitized, now());
-		this.unsupportedSchemaVersion =
-			loaded.kind === "unsupported" ? loaded.schemaVersion : undefined;
 		this.stashFile = paths.stashFile;
 	}
 
@@ -167,7 +181,6 @@ export class StashStore {
 		for (const cleanupId of cleanupIds) assertSafeEntryId(cleanupId);
 		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
-			this.assertWritable();
 			assertAvailableOwnership(this.file, id, cleanupIds);
 			const entry: StashEntry = {
 				id,
@@ -209,7 +222,6 @@ export class StashStore {
 		for (const id of retainIds) assertSafeEntryId(id);
 		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
-			this.assertWritable();
 			const retainedSet = new Set(retainIds);
 			const retained = this.file.restoredAssetLeases.filter((id) => retainedSet.has(id));
 			const queued = this.file.restoredAssetLeases.filter((id) => !retainedSet.has(id));
@@ -228,7 +240,6 @@ export class StashStore {
 		assertSafeEntryId(id);
 		await withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
-			this.assertWritable();
 			if (!this.file.pendingAssetCleanup.includes(id)) return;
 			const nextFile = {
 				...this.file,
@@ -242,7 +253,6 @@ export class StashStore {
 	async clear(): Promise<string[]> {
 		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
-			this.assertWritable();
 			const removedIds = this.file.entries.map((entry) => entry.id);
 			const nextFile = {
 				...createEmptyStashFile(this.paths.sanitized, this.now()),
@@ -263,7 +273,6 @@ export class StashStore {
 	): Promise<ResolvedEntry | undefined> {
 		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
-			this.assertWritable();
 			const resolved = resolveBySelector(this.file.entries, selector);
 			if (!resolved || (beforeRemove && !(await beforeRemove(resolved)))) return undefined;
 			const ownsAssets = (resolved.entry.assetCount ?? 0) > 0;
@@ -302,21 +311,13 @@ export class StashStore {
 		);
 		if (loaded.kind === "ready") {
 			this.file = loaded.file;
-			this.unsupportedSchemaVersion = undefined;
 		} else if (loaded.kind === "unsupported") {
-			this.unsupportedSchemaVersion = loaded.schemaVersion;
+			throw new UnsupportedStashSchemaError(loaded.schemaVersion);
 		} else {
 			this.file = createEmptyStashFile(this.paths.sanitized, this.now());
-			this.unsupportedSchemaVersion = undefined;
 		}
 		// Corrupt input is quarantined and replaced with a fresh in-memory file so
 		// later writes cannot resurrect entries from the invalidated snapshot.
-	}
-
-	private assertWritable(): void {
-		if (this.unsupportedSchemaVersion !== undefined) {
-			throw new Error(`unsupported stash schema version ${this.unsupportedSchemaVersion}`);
-		}
 	}
 }
 
@@ -361,6 +362,9 @@ export async function loadStashStore(
 	const loaded = await withStashLock(paths.stashFile, () =>
 		readCurrentStashFile(paths.stashFile, paths.sanitized, now, write),
 	);
+	if (loaded.kind === "unsupported") {
+		throw new UnsupportedStashSchemaError(loaded.schemaVersion);
+	}
 	return new StashStore(paths, loaded, now, write);
 }
 

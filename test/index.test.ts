@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -37,6 +38,14 @@ const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const DEAD_PROCESS_ID = 2_147_483_647;
 const UI_OPEN_WAIT_ATTEMPTS = 100;
 const UI_OPEN_WAIT_MS = 10;
+const STASH_COMMAND_NAMES = [
+	"stash",
+	"stash-list",
+	"stash-pop",
+	"stash-drop",
+	"stash-cleanup",
+	"stash-clear",
+] as const;
 
 const directTempImages: string[] = [];
 
@@ -78,15 +87,22 @@ function fakeUi(options: FakeUiOptions = {}): StashUi & {
 	};
 }
 
+type RegisteredCommand = {
+	description: string;
+	handler(args: unknown, ctx: unknown): unknown;
+};
+
 function extensionHarness(): {
 	pi: ExtensionAPI;
 	handlers: Map<string, ExtensionHandler>;
+	commands: Map<string, RegisteredCommand>;
 	events: {
 		emit(event: string, payload?: unknown): void;
 		on(event: string, handler: (payload?: unknown) => void): () => void;
 	};
 } {
 	const handlers = new Map<string, ExtensionHandler>();
+	const commands = new Map<string, RegisteredCommand>();
 	const eventHandlers = new Map<string, Set<(payload?: unknown) => void>>();
 	const events = {
 		emit(event: string, payload?: unknown): void {
@@ -106,10 +122,12 @@ function extensionHarness(): {
 		on(event: string, handler: ExtensionHandler): void {
 			handlers.set(event, handler);
 		},
-		registerCommand(): void {},
+		registerCommand(name: string, command: RegisteredCommand): void {
+			commands.set(name, command);
+		},
 		events,
 	} as unknown as ExtensionAPI;
-	return { pi, handlers, events };
+	return { pi, handlers, commands, events };
 }
 
 type ExtensionHandler = (event: unknown, ctx: unknown) => unknown;
@@ -249,7 +267,7 @@ test("doStash removes staged assets when the store rejects the entry", async () 
 	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 
-	await assert.rejects(() => doStash(ui, store, paths), /unsupported stash schema version/);
+	await assert.rejects(() => doStash(ui, store, paths), /stash data uses schema version/);
 
 	assert.deepEqual(existsSync(paths.assetsRoot) ? readdirSync(paths.assetsRoot) : [], []);
 	assert.equal(ui.editorText, `see ${image}`);
@@ -278,7 +296,7 @@ test("doStash aggregates persistence and staged-asset rollback failures", async 
 			}),
 		(error: unknown) =>
 			error instanceof AggregateError &&
-			error.errors.some((nested) => String(nested).includes("unsupported stash schema")) &&
+			error.errors.some((nested) => String(nested).includes("stash data uses schema version")) &&
 			error.errors.some((nested) => String(nested).includes("rollback failed")),
 	);
 	assert.equal(ui.editorText, `see ${image}`);
@@ -753,6 +771,54 @@ test("session shutdown cancels prefix operations that have not started", async (
 		const store = await loadStashStore(paths);
 		assert.equal(store.entryCount, 0);
 		assert.equal(ui.widgets.has("pi-stash"), false);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("unsupported schema stays unavailable across startup and every command", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		const cwd = "/future-schema";
+		const legacyBaseDir = path.join(baseDir, "legacy");
+		const legacyPaths = resolveStashPaths(cwd, legacyBaseDir);
+		await (await loadStashStore(legacyPaths)).add({ text: "legacy stays put" });
+		const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
+		mkdirSync(path.dirname(paths.stashFile), { recursive: true });
+		const futureVersion = STASH_SCHEMA_VERSION + 1;
+		const original = JSON.stringify({
+			schemaVersion: futureVersion,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+		});
+		writeFileSync(paths.stashFile, original);
+		installPiStash(pi, { legacyBaseDir });
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		const unavailableReason = ui.notifs.at(-1)?.message ?? "";
+		assert.ok(unavailableReason.includes(`schema version ${futureVersion}`));
+		assert.ok(
+			unavailableReason.includes(`supports schema versions through ${STASH_SCHEMA_VERSION}`),
+		);
+		assert.ok(unavailableReason.toLowerCase().includes("upgrade"));
+		assert.ok(unavailableReason.includes("export"));
+		assert.ok(ui.widgets.get("pi-stash")?.some((line) => line.includes("unavailable")));
+		for (const name of STASH_COMMAND_NAMES) {
+			await commands.get(name)?.handler("0", ctx);
+			assert.equal(ui.notifs.at(-1)?.message, unavailableReason, name);
+		}
+		assert.equal(readFileSync(paths.stashFile, "utf8"), original);
+		assert.equal((await loadStashStore(legacyPaths)).entries[0]?.text, "legacy stays put");
+		assert.equal(readdirSync(path.dirname(paths.stashFile)).length, 1);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

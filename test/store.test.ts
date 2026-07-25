@@ -24,6 +24,7 @@ import {
 	loadStashStore,
 	readProcessGeneration,
 	STASH_SCHEMA_VERSION,
+	UnsupportedStashSchemaError,
 	writeStashFile,
 } from "../src/store.ts";
 
@@ -630,32 +631,67 @@ test("stash file for another cwd key is quarantined", async () => {
 	assert.ok(readdirSync(baseDir).some((name) => name.includes(".corrupt-")));
 });
 
-test("unsupported future schema remains in place and blocks writes", async () => {
+test("unsupported future schema remains untouched and reports recovery guidance", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
-	writeFileSync(
-		paths.stashFile,
-		JSON.stringify({
-			schemaVersion: FUTURE_SCHEMA_VERSION,
-			cwd: paths.sanitized,
-			createdAt: 1,
-			updatedAt: 1,
-			entries: [],
-		}),
-	);
-	const store = await loadStashStore(paths, clock);
+	const original = JSON.stringify({
+		schemaVersion: FUTURE_SCHEMA_VERSION,
+		cwd: paths.sanitized,
+		createdAt: 1,
+		updatedAt: 1,
+		entries: [],
+	});
+	writeFileSync(paths.stashFile, original);
 
-	await assert.rejects(
-		() => store.add({ text: "must not overwrite" }),
-		/unsupported stash schema version/,
-	);
-	assert.equal(
-		JSON.parse(readFileSync(paths.stashFile, "utf8")).schemaVersion,
-		FUTURE_SCHEMA_VERSION,
-	);
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		await assert.rejects(
+			() => loadStashStore(paths, clock),
+			(error: unknown) =>
+				error instanceof UnsupportedStashSchemaError &&
+				error.detectedVersion === FUTURE_SCHEMA_VERSION &&
+				error.supportedVersion === STASH_SCHEMA_VERSION &&
+				error.message.toLowerCase().includes("upgrade") &&
+				error.message.includes("export"),
+		);
+	}
+
+	assert.equal(readFileSync(paths.stashFile, "utf8"), original);
 	assert.equal(
 		readdirSync(baseDir).some((name) => name.includes(".corrupt-")),
 		false,
 	);
+});
+
+test("missing and malformed schema metadata is quarantined as corrupt", async () => {
+	for (const [cwd, raw] of [
+		["/missing-version", { cwd: "--missing-version", entries: [] }],
+		["/string-version", { schemaVersion: String(FUTURE_SCHEMA_VERSION), entries: [] }],
+	] as const) {
+		const paths = resolveStashPaths(cwd, baseDir);
+		writeFileSync(paths.stashFile, JSON.stringify(raw));
+
+		const store = await loadStashStore(paths, clock);
+
+		assert.equal(store.entryCount, 0);
+		assert.equal(existsSync(paths.stashFile), false);
+	}
+	assert.equal(readdirSync(baseDir).filter((name) => name.includes(".corrupt-")).length, 2);
+});
+
+test("a loaded store rejects a future schema introduced by another process", async () => {
+	const paths = resolveStashPaths("/future-refresh", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const original = JSON.stringify({
+		schemaVersion: FUTURE_SCHEMA_VERSION,
+		cwd: paths.sanitized,
+		createdAt: 1,
+		updatedAt: 1,
+		entries: [],
+	});
+	writeFileSync(paths.stashFile, original);
+
+	await assert.rejects(() => store.refresh(), UnsupportedStashSchemaError);
+	await assert.rejects(() => store.add({ text: "blocked" }), UnsupportedStashSchemaError);
+	assert.equal(readFileSync(paths.stashFile, "utf8"), original);
 });
 
 test("corrupt stash file is quarantined and treated as empty", async () => {
