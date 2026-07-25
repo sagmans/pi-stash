@@ -24,6 +24,7 @@ import {
 	Text,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 import { entryLabel } from "./widget.ts";
 
@@ -81,7 +82,7 @@ export function listRow(
 export function headerLine(count: number, cwdLabel: string, theme: OverlayTheme): string {
 	const title = theme.fg("accent", theme.bold("Stash"));
 	const tally = theme.fg("muted", `${count} draft${count === 1 ? "" : "s"}`);
-	const where = theme.fg("dim", cwdLabel);
+	const where = theme.fg("dim", sanitizeTerminalLine(cwdLabel));
 	return ` ${title}  ${tally}  ${where}`;
 }
 
@@ -115,8 +116,8 @@ export function detailHeader(item: IndexedEntry, theme: OverlayTheme): string {
 export function detailBody(item: IndexedEntry, theme: OverlayTheme): string[] {
 	const lines: string[] = [];
 	const message = item.entry.message?.trim();
-	if (message) lines.push(theme.fg("muted", `note: ${message}`));
-	lines.push(theme.fg("text", item.entry.text));
+	if (message) lines.push(theme.fg("muted", `note: ${sanitizeTerminalLine(message)}`));
+	lines.push(theme.fg("text", sanitizeTerminalText(item.entry.text)));
 	return lines;
 }
 

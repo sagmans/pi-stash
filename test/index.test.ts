@@ -433,6 +433,19 @@ test("doPop does not overwrite typing entered while a failed removal is pending"
 	assert.equal(store.entryCount, 1);
 });
 
+test("notifications sanitize untrusted selectors before terminal display", async () => {
+	const store = await loadStashStore(resolveStashPaths("/safe-notification", baseDir));
+	const paths = resolveStashPaths("/safe-notification", baseDir);
+	const ui = fakeUi();
+
+	await doPop(ui, store, paths, "missing\u001b[2J\u202e");
+
+	const notification = ui.notifs.at(-1)?.message ?? "";
+	assert.equal(notification.includes("\u001b"), false);
+	assert.equal(notification.includes("\u202e"), false);
+	assert.ok(notification.includes("missing"));
+});
+
 test("doPop warns when selector matches nothing", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);

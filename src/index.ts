@@ -36,6 +36,7 @@ import {
 	type RestoredAssetCleanup,
 	type StashStore,
 } from "./store.ts";
+import { sanitizeTerminalText } from "./terminal.ts";
 import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
 import { themedWidgetLines } from "./widget.ts";
 
@@ -98,6 +99,10 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 
 export type AssetDirRemover = (assetDir: string) => Promise<void>;
 
+function safeNotify(ui: StashUi, message: string, type?: "info" | "warning" | "error"): void {
+	ui.notify(sanitizeTerminalText(message), type);
+}
+
 function committedMutation<Result>(error: unknown): CommittedMutationError<Result> | undefined {
 	return error instanceof CommittedMutationError ? error : undefined;
 }
@@ -140,9 +145,9 @@ export async function drainAssetCleanup(
 		}
 	}
 	if (signal?.aborted) return report;
-	if (report.failed.length > 0) ui.notify(failureMessage, "error");
+	if (report.failed.length > 0) safeNotify(ui, failureMessage, "error");
 	if (lockReleaseFailed) {
-		ui.notify(`Asset cleanup committed, but ${LOCK_RELEASE_FAILED_MESSAGE}`, "error");
+		safeNotify(ui, `Asset cleanup committed, but ${LOCK_RELEASE_FAILED_MESSAGE}`, "error");
 	}
 	return report;
 }
@@ -177,7 +182,8 @@ export async function doAssetCleanup(
 		signal,
 	);
 	if (signal?.aborted) return;
-	ui.notify(
+	safeNotify(
+		ui,
 		`Asset cleanup: deleted ${report.deleted.length}, retained ${lifecycle.retained.length}, failed ${report.failed.length}`,
 		report.failed.length > 0 ? "error" : "info",
 	);
@@ -194,7 +200,7 @@ export async function doStash(
 	if (signal?.aborted) return;
 	const text = ui.getEditorText();
 	if (text.trim().length === 0) {
-		ui.notify("Nothing to stash", "info");
+		safeNotify(ui, "Nothing to stash", "info");
 		return;
 	}
 
@@ -268,7 +274,8 @@ export async function doStash(
 	const failure = lockReleaseFailed ? LOCK_RELEASE_FAILED_MESSAGE : undefined;
 	const reportedFailure =
 		failure ?? (intentFinalizeFailed ? INTENT_FINALIZE_FAILED_MESSAGE : undefined);
-	ui.notify(
+	safeNotify(
+		ui,
 		reportedFailure ? `${successMessage}, but ${reportedFailure}` : successMessage,
 		reportedFailure ? "error" : "info",
 	);
@@ -285,10 +292,11 @@ export async function openOverlay(
 	if (session.mode !== "tui") {
 		const entries = store.entries;
 		if (entries.length === 0) {
-			session.ui.notify("No stashed drafts", "info");
+			safeNotify(session.ui, "No stashed drafts", "info");
 			return;
 		}
-		session.ui.notify(
+		safeNotify(
+			session.ui,
 			`${entries.length} stashed draft(s). Use /stash-pop <index> to restore.`,
 			"info",
 		);
@@ -297,7 +305,7 @@ export async function openOverlay(
 
 	const entries = [...store.entries];
 	if (entries.length === 0) {
-		session.ui.notify("No stashed drafts", "info");
+		safeNotify(session.ui, "No stashed drafts", "info");
 		return;
 	}
 
@@ -314,12 +322,12 @@ export async function openOverlay(
 					try {
 						dropped = await store.drop(entry.id);
 					} catch {
-						if (!signal?.aborted) session.ui.notify(DROP_FAILED_MESSAGE, "error");
+						if (!signal?.aborted) safeNotify(session.ui, DROP_FAILED_MESSAGE, "error");
 						return false;
 					}
 					if (signal?.aborted) return false;
 					if (!dropped) {
-						session.ui.notify("Entry already gone", "warning");
+						safeNotify(session.ui, "Entry already gone", "warning");
 						return false;
 					}
 					refreshWidget(session.ui, store);
@@ -331,7 +339,7 @@ export async function openOverlay(
 						ASSET_CLEANUP_FAILED_MESSAGE,
 						signal,
 					);
-					if (!signal?.aborted) session.ui.notify(`Dropped [${dropped.index}]`, "info");
+					if (!signal?.aborted) safeNotify(session.ui, `Dropped [${dropped.index}]`, "info");
 					return true;
 				},
 			});
@@ -367,7 +375,7 @@ function shortCwd(cwd: string): string {
 
 function editorIsReadyForRestore(ui: StashUi): boolean {
 	if (ui.getEditorText().trim().length === 0) return true;
-	ui.notify(RESTORE_BLOCKED_MESSAGE, "warning");
+	safeNotify(ui, RESTORE_BLOCKED_MESSAGE, "warning");
 	return false;
 }
 
@@ -413,7 +421,7 @@ async function restoreEntry(
 	}
 	if (editorBlocked || signal?.aborted) return;
 	if (!resolved) {
-		ui.notify(missingMessage, "warning");
+		safeNotify(ui, missingMessage, "warning");
 		return;
 	}
 	let intentFinalizeFailed = false;
@@ -430,7 +438,8 @@ async function restoreEntry(
 	const failure = lockReleaseFailed ? LOCK_RELEASE_FAILED_MESSAGE : undefined;
 	const reportedFailure =
 		failure ?? (intentFinalizeFailed ? INTENT_FINALIZE_FAILED_MESSAGE : undefined);
-	ui.notify(
+	safeNotify(
+		ui,
 		reportedFailure ? `${successMessage}, but ${reportedFailure}` : successMessage,
 		reportedFailure ? "error" : "info",
 	);
@@ -474,7 +483,11 @@ export async function doDrop(
 	}
 	if (signal?.aborted) return;
 	if (!resolved) {
-		ui.notify(selector ? `No stash entry matching "${selector}"` : "No stashed drafts", "warning");
+		safeNotify(
+			ui,
+			selector ? `No stash entry matching "${selector}"` : "No stashed drafts",
+			"warning",
+		);
 		return;
 	}
 	refreshWidget(ui, store);
@@ -483,7 +496,8 @@ export async function doDrop(
 	}
 	if (signal?.aborted) return;
 	const successMessage = `Dropped [${resolved.index}]`;
-	ui.notify(
+	safeNotify(
+		ui,
 		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
 		lockReleaseFailed ? "error" : "info",
 	);
@@ -499,7 +513,7 @@ export async function doClear(
 	await store.refresh();
 	if (signal?.aborted) return;
 	if (store.entryCount === 0) {
-		ui.notify("No stashed drafts", "info");
+		safeNotify(ui, "No stashed drafts", "info");
 		return;
 	}
 	const ok = await ui.confirm("Clear stash?", "Delete every stashed draft for this worktree?", {
@@ -523,7 +537,8 @@ export async function doClear(
 	}
 	if (signal?.aborted) return;
 	const successMessage = `Cleared ${ids.length} draft${ids.length === 1 ? "" : "s"}`;
-	ui.notify(
+	safeNotify(
+		ui,
 		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
 		lockReleaseFailed ? "error" : "info",
 	);
@@ -554,7 +569,7 @@ function makeRequireActive(getter: ActiveGetter): ActiveResolver {
 		const active = getter();
 		if (!active?.accepting) {
 			if (ctx && "ui" in ctx && ctx.ui && typeof (ctx.ui as StashUi).notify === "function") {
-				(ctx.ui as StashUi).notify("pi-stash is not ready yet", "warning");
+				safeNotify(ctx.ui as StashUi, "pi-stash is not ready yet", "warning");
 			}
 			return undefined;
 		}
@@ -657,7 +672,7 @@ function reportActionFailure(
 	operation: Promise<void>,
 ): void {
 	void operation.catch(() => {
-		if (active.accepting) active.ui.notify(`pi-stash: ${action} failed`, "error");
+		if (active.accepting) safeNotify(active.ui, `pi-stash: ${action} failed`, "error");
 	});
 }
 
@@ -711,11 +726,15 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				options.legacyBaseDir ?? legacyStashBaseDir(),
 			);
 			if (migration.kind !== "not-needed") {
-				ctx.ui.notify("Migrated legacy pi-stash data to the configured Pi agent directory", "info");
+				safeNotify(
+					ctx.ui as StashUi,
+					"Migrated legacy pi-stash data to the configured Pi agent directory",
+					"info",
+				);
 			}
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : "unknown legacy migration failure";
-			ctx.ui.notify(`pi-stash unavailable: ${reason}`, "error");
+			safeNotify(ctx.ui as StashUi, `pi-stash unavailable: ${reason}`, "error");
 			return;
 		}
 		let store: StashStore;
@@ -723,11 +742,11 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			store = await loadStashStore(paths);
 			const reconciliation = await reconcileMutationIntents(paths, store);
 			if (reconciliation.recoveredRestores > 0) {
-				ctx.ui.notify(RESTORE_RECOVERED_MESSAGE, "warning");
+				safeNotify(ctx.ui as StashUi, RESTORE_RECOVERED_MESSAGE, "warning");
 			}
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : "unknown recovery failure";
-			ctx.ui.notify(`pi-stash unavailable: ${reason}`, "error");
+			safeNotify(ctx.ui as StashUi, `pi-stash unavailable: ${reason}`, "error");
 			return;
 		}
 		await drainAssetCleanup(ctx.ui as StashUi, store, paths);
@@ -739,7 +758,8 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			claims: buildStashClaims(ctx, () => active),
 			onInert: () => {
 				if (abort.signal.aborted) return;
-				ctx.ui.notify(
+				safeNotify(
+					ctx.ui as StashUi,
 					"pi-stash: prefix-keybindings not detected; use /stash and /stash-list",
 					"warning",
 				);

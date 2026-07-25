@@ -5,6 +5,7 @@
 // setWidget with `undefined` when there is nothing to show, keeping the editor
 // area uncluttered when no stash exists.
 
+import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 
 export const MAX_WIDGET_LINES = 5;
@@ -18,7 +19,7 @@ export type RenderOptions = {
 };
 
 export function firstNonEmptyLine(text: string): string {
-	for (const line of text.split(/\r?\n/)) {
+	for (const line of sanitizeTerminalText(text).split(/\r?\n/)) {
 		const trimmed = line.trim();
 		if (trimmed.length > 0) return trimmed;
 	}
@@ -32,7 +33,7 @@ export function truncateForWidget(value: string, width: number): string {
 
 export function entryLabel(entry: StashEntry, previewWidth: number): string {
 	const label = entry.message?.trim() || firstNonEmptyLine(entry.text) || "(empty draft)";
-	return truncateForWidget(label, previewWidth);
+	return truncateForWidget(sanitizeTerminalLine(label), previewWidth);
 }
 
 export function renderWidgetLines(
@@ -53,7 +54,7 @@ export function themedWidgetLines(
 ): string[] {
 	if (entries.length === 0) return [];
 
-	const openHint = options.openHint ?? DEFAULT_OPEN_HINT;
+	const openHint = sanitizeTerminalLine(options.openHint ?? DEFAULT_OPEN_HINT);
 	const previewWidth = options.previewWidth ?? DEFAULT_PREVIEW_WIDTH;
 	const maxLines = options.maxLines ?? MAX_WIDGET_LINES;
 

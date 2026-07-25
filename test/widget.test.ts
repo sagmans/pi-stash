@@ -69,6 +69,19 @@ test("truncateForWidget adds ellipsis past the width", () => {
 	assert.equal(truncateForWidget("abcdefghij", 5), "abcd…");
 });
 
+test("widget labels cannot emit terminal controls or extra rows", () => {
+	const lines = renderWidgetLines([
+		entry({ message: "safe\u001b[31m red\u001b[0m\nforged\u202erow" }),
+	]);
+
+	assert.equal(lines.length, 2);
+	assert.equal(
+		lines.some((line) => line.includes("\u001b") || line.includes("\u202e")),
+		false,
+	);
+	assert.ok(lines[1]?.includes("safe red forgedrow"));
+});
+
 test("themedWidgetLines routes each region through theme.fg", () => {
 	const colors: string[] = [];
 	const theme = {

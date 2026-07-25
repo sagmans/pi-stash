@@ -69,6 +69,26 @@ test("detailBody prepends a note when present", () => {
 	assert.equal(noNote.length, 1);
 });
 
+test("overlay text sanitizes terminal controls without losing draft line structure", () => {
+	const item = {
+		entry: entry("a", "line one\nline \u001b[2Jtwo", {
+			message: "note\u001b]8;;https://evil.invalid\u0007link\u001b]8;;\u0007",
+		}),
+		index: 0,
+	};
+	const body = detailBody(item, theme);
+	const row = listRow(item, true, theme);
+	const header = headerLine(1, "repo\u202ename", theme);
+
+	assert.equal(
+		[row, header, ...body].some((value) => value.includes("\u001b")),
+		false,
+	);
+	assert.equal(header.includes("\u202e"), false);
+	assert.equal(body[1], "line one\nline two");
+	assert.ok(body[0]?.includes("notelink"));
+});
+
 test("detailHeader shows index and image count", () => {
 	const line = detailHeader({ entry: entry("a", "x", { assetCount: 2 }), index: 0 }, theme);
 	assert.ok(line.includes("[0]"));
