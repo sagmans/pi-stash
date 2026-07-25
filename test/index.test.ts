@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -28,6 +29,10 @@ import {
 import { removeAssetDir } from "../src/assets.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
+
+const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
+
+const directTempImages: string[] = [];
 
 type FakeUiOptions = {
 	editorText?: string;
@@ -114,11 +119,20 @@ test("isSupportedSession activates only interactive TUI sessions", () => {
 
 beforeEach(() => {
 	baseDir = mkdtempSync(path.join(tmpdir(), "pi-stash-index-"));
+	directTempImages.length = 0;
 });
 
 afterEach(() => {
 	rmSync(baseDir, { recursive: true, force: true });
+	for (const image of directTempImages) rmSync(image, { force: true });
 });
+
+function clipboardImage(): string {
+	const image = path.join(tmpdir(), `pi-clipboard-${randomUUID()}.png`);
+	writeFileSync(image, PNG_BYTES);
+	directTempImages.push(image);
+	return image;
+}
 
 function poisonLockOwner(paths: ReturnType<typeof resolveStashPaths>): void {
 	const lockPath = `${paths.stashFile}.lock`;
@@ -199,21 +213,16 @@ test("doStash with nothing typed notifies and writes nothing", async () => {
 test("doStash persists a tmp image and records the assetCount", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
-	// baseDir itself lives under os.tmpdir(), so a file beneath it is treated as
-	// a tmp-dir image and persisted by the assets pipeline.
-	const tmpRoot = path.join(baseDir, "tmp");
-	mkdirSync(tmpRoot, { recursive: true });
-	const img = path.join(tmpRoot, "clip.png");
-	writeFileSync(img, "png");
-	const ui = fakeUi({ editorText: `see ${img}` });
+	const image = clipboardImage();
+	const ui = fakeUi({ editorText: `see ${image}` });
 
 	await doStash(ui, store, paths);
 
 	const entry = store.entries[0];
 	assert.ok(entry);
 	assert.equal(entry.assetCount, 1, "assetCount recorded");
-	assert.notEqual(entry.text, `see ${img}`, "path rewritten to persisted copy");
-	const assetFile = path.join(paths.assetDir(entry.id), "00-clip.png");
+	assert.notEqual(entry.text, `see ${image}`, "path rewritten to persisted copy");
+	const assetFile = path.join(paths.assetDir(entry.id), `00-${path.basename(image)}`);
 	assert.ok(entry.text.includes(assetFile), "text points at asset copy");
 	assert.ok(existsSync(assetFile), "asset file copied");
 });
@@ -231,10 +240,7 @@ test("doStash removes staged assets when the store rejects the entry", async () 
 			entries: [],
 		}),
 	);
-	const tmpRoot = path.join(baseDir, "tmp-failed");
-	mkdirSync(tmpRoot);
-	const image = path.join(tmpRoot, "clip.png");
-	writeFileSync(image, "png");
+	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 
 	await assert.rejects(() => doStash(ui, store, paths), /unsupported stash schema version/);
@@ -256,8 +262,7 @@ test("doStash aggregates persistence and staged-asset rollback failures", async 
 			entries: [],
 		}),
 	);
-	const image = path.join(baseDir, "rollback.png");
-	writeFileSync(image, "png");
+	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 
 	await assert.rejects(
@@ -276,10 +281,7 @@ test("doStash aggregates persistence and staged-asset rollback failures", async 
 test("restashing a restored image transfers ownership for later drop", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const store = await loadStashStore(paths);
-	const tmpRoot = path.join(baseDir, "tmp-transfer");
-	mkdirSync(tmpRoot);
-	const image = path.join(tmpRoot, "clip.png");
-	writeFileSync(image, "png");
+	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 	await doStash(ui, store, paths);
 	const original = store.entries[0];

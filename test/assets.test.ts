@@ -17,70 +17,112 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { isImagePath, persistTmpImages, removeAssetDir } from "../src/assets.ts";
 
+const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
+const JPEG_BYTES = Buffer.from("ffd8ffe0", "hex");
+const GIF_BYTES = Buffer.from("GIF89a", "ascii");
+const WEBP_BYTES = Buffer.from("524946460000000057454250", "hex");
+const BMP_BYTES = Buffer.from("BM", "ascii");
+const IMAGE_BYTES = {
+	png: PNG_BYTES,
+	jpg: JPEG_BYTES,
+	jpeg: JPEG_BYTES,
+	gif: GIF_BYTES,
+	webp: WEBP_BYTES,
+	bmp: BMP_BYTES,
+} as const;
+const TEST_UUID_PREFIX = "00000000-0000-4000-8000";
+const SMALL_IMAGE_LIMITS = {
+	maxImageBytes: PNG_BYTES.length,
+	maxDraftBytes: PNG_BYTES.length * 2,
+	maxImageCount: 2,
+};
+
 let scratch: string;
 let tmpRoot: string;
+let imageSequence: number;
 
 beforeEach(() => {
 	scratch = mkdtempSync(path.join(tmpdir(), "pi-stash-assets-"));
 	tmpRoot = path.join(scratch, "tmp");
 	mkdirSync(tmpRoot, { recursive: true });
+	imageSequence = 0;
 });
 
 afterEach(() => {
 	rmSync(scratch, { recursive: true, force: true });
 });
 
-function tmpImage(name: string): string {
-	const file = path.join(tmpRoot, name);
-	writeFileSync(file, "png-bytes");
+function clipboardImage(
+	extension: keyof typeof IMAGE_BYTES = "png",
+	bytes: Uint8Array = IMAGE_BYTES[extension],
+): string {
+	imageSequence += 1;
+	const suffix = imageSequence.toString().padStart(12, "0");
+	const file = path.join(tmpRoot, `pi-clipboard-${TEST_UUID_PREFIX}-${suffix}.${extension}`);
+	writeFileSync(file, bytes);
 	return file;
 }
 
-test("isImagePath only accepts absolute tmp-dir image paths", () => {
-	const img = tmpImage("x.png");
-	assert.equal(isImagePath(img, tmpRoot), true);
-	assert.equal(isImagePath(path.join(scratch, "repo.png"), tmpRoot), false);
-	assert.equal(isImagePath("relative/x.png", tmpRoot), false);
-	assert.equal(isImagePath(path.join(tmpRoot, "notes.txt"), tmpRoot), false);
+function missingClipboardImage(extension: keyof typeof IMAGE_BYTES = "png"): string {
+	return path.join(tmpRoot, `pi-clipboard-${TEST_UUID_PREFIX}-999999999999.${extension}`);
+}
+
+test("isImagePath accepts only direct Pi clipboard-image paths", () => {
+	const image = clipboardImage();
+	const nested = path.join(tmpRoot, "nested", path.basename(image));
+	assert.equal(isImagePath(image, tmpRoot), true);
+	assert.equal(isImagePath(nested, tmpRoot), false);
+	assert.equal(isImagePath(path.join(scratch, path.basename(image)), tmpRoot), false);
+	assert.equal(isImagePath(path.join(tmpRoot, "clip.png"), tmpRoot), false);
+	assert.equal(isImagePath("relative/pi-clipboard-id.png", tmpRoot), false);
 	assert.equal(isImagePath("", tmpRoot), false);
 });
 
-test("persistTmpImages copies a tmp image and rewrites the path", async () => {
-	const img = tmpImage("clip.png");
+test("isImagePath recognizes every supported clipboard-image suffix exactly", () => {
+	for (const extension of Object.keys(IMAGE_BYTES) as Array<keyof typeof IMAGE_BYTES>) {
+		assert.equal(isImagePath(clipboardImage(extension), tmpRoot), true);
+	}
+	assert.equal(
+		isImagePath(
+			path.join(tmpRoot, `pi-clipboard-${TEST_UUID_PREFIX}-999999999999.png.exe`),
+			tmpRoot,
+		),
+		false,
+	);
+});
+
+test("persistTmpImages copies exact bytes and rewrites the path", async () => {
+	const image = clipboardImage();
 	const assetDir = path.join(scratch, "assets", "entry-1");
-	const result = await persistTmpImages({ text: `see ${img}`, assetDir, tmpDir: tmpRoot });
+	const result = await persistTmpImages({ text: `see ${image}`, assetDir, tmpDir: tmpRoot });
+	const copiedImage = path.join(assetDir, `00-${path.basename(image)}`);
 
 	assert.equal(result.count, 1);
-	assert.notEqual(result.text, `see ${img}`);
-	assert.ok(result.text.includes(path.join(assetDir, "00-clip.png")));
-	const copiedImage = path.join(assetDir, "00-clip.png");
-	assert.ok(existsSync(copiedImage));
+	assert.notEqual(result.text, `see ${image}`);
+	assert.ok(result.text.includes(copiedImage));
+	assert.deepEqual(readFileSync(copiedImage), PNG_BYTES);
 	assert.equal(statSync(copiedImage).mode & 0o777, 0o600);
 });
 
-test("persistTmpImages recognizes spaced paths beside prose and punctuation", async () => {
-	const spacedRoot = path.join(scratch, "tmp root");
-	mkdirSync(spacedRoot);
-	const first = path.join(spacedRoot, "clip one.png");
-	const second = path.join(spacedRoot, "clip two.jpg");
-	writeFileSync(first, "one");
-	writeFileSync(second, "two");
-	const assetDir = path.join(scratch, "assets", "spaced-entry");
+test("persistTmpImages recognizes supported paths beside prose and punctuation", async () => {
+	const first = clipboardImage("png");
+	const second = clipboardImage("jpg");
+	const assetDir = path.join(scratch, "assets", "punctuation-entry");
 
 	const result = await persistTmpImages({
 		text: `before:${first},middle(${second})after`,
 		assetDir,
-		tmpDir: spacedRoot,
+		tmpDir: tmpRoot,
 	});
 
 	assert.equal(result.count, 2);
 	assert.equal(
 		result.text,
-		`before:${path.join(assetDir, "00-clip one.png")},middle(${path.join(assetDir, "01-clip two.jpg")})after`,
+		`before:${path.join(assetDir, `00-${path.basename(first)}`)},middle(${path.join(assetDir, `01-${path.basename(second)}`)})after`,
 	);
 });
 
-test("persistTmpImages leaves repo/absolute paths untouched", async () => {
+test("persistTmpImages leaves repository and unrelated absolute paths untouched", async () => {
 	const repoFile = path.join(scratch, "src", "foo.ts");
 	mkdirSync(path.dirname(repoFile), { recursive: true });
 	writeFileSync(repoFile, "code");
@@ -90,16 +132,61 @@ test("persistTmpImages leaves repo/absolute paths untouched", async () => {
 
 	assert.equal(result.count, 0);
 	assert.equal(result.text, text);
-	assert.equal(existsSync(assetDir), false, "no asset dir should be created");
+	assert.equal(existsSync(assetDir), false);
 });
 
-test("persistTmpImages skips missing tmp files", async () => {
-	const ghost = path.join(tmpRoot, "missing.png");
-	const assetDir = path.join(scratch, "assets", "entry-3");
-	const result = await persistTmpImages({ text: `see ${ghost}`, assetDir, tmpDir: tmpRoot });
+test("persistTmpImages rejects a missing recognized clipboard image", async () => {
+	const missing = missingClipboardImage();
+	const assetDir = path.join(scratch, "assets", "missing-entry");
 
-	assert.equal(result.count, 0);
-	assert.equal(result.text, `see ${ghost}`);
+	await assert.rejects(
+		() => persistTmpImages({ text: `see ${missing}`, assetDir, tmpDir: tmpRoot }),
+		/ENOENT/,
+	);
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persistTmpImages rejects symbolic-link clipboard images", async () => {
+	const target = path.join(scratch, "private.png");
+	writeFileSync(target, PNG_BYTES);
+	const image = missingClipboardImage();
+	symlinkSync(target, image);
+	const assetDir = path.join(scratch, "assets", "linked-source");
+
+	await assert.rejects(
+		() => persistTmpImages({ text: image, assetDir, tmpDir: tmpRoot }),
+		/symbolic link|ELOOP/,
+	);
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persistTmpImages rejects malformed or extension-mismatched image bytes", async () => {
+	const malformed = clipboardImage("png", Buffer.from("not an image"));
+	const mismatched = clipboardImage("jpg", PNG_BYTES);
+	const assetDir = path.join(scratch, "assets", "malformed-entry");
+
+	await assert.rejects(
+		() => persistTmpImages({ text: `${malformed} ${mismatched}`, assetDir, tmpDir: tmpRoot }),
+		/invalid png image/,
+	);
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persistTmpImages deduplicates copied bytes and rewrites every reference", async () => {
+	const first = clipboardImage();
+	const second = clipboardImage("png", PNG_BYTES);
+	const assetDir = path.join(scratch, "assets", "deduplicated-entry");
+
+	const result = await persistTmpImages({
+		text: `${first} ${second} ${first}`,
+		assetDir,
+		tmpDir: tmpRoot,
+	});
+	const destination = path.join(assetDir, `00-${path.basename(first)}`);
+
+	assert.equal(result.count, 1);
+	assert.equal(result.text, `${destination} ${destination} ${destination}`);
+	assert.deepEqual(readdirSync(assetDir), [path.basename(destination)]);
 });
 
 test("persistTmpImages transfers images from an older owned asset directory", async () => {
@@ -107,7 +194,7 @@ test("persistTmpImages transfers images from an older owned asset directory", as
 	const oldAssetDir = path.join(ownedRoot, "old-entry");
 	mkdirSync(oldAssetDir, { recursive: true });
 	const oldImage = path.join(oldAssetDir, "00-clip.png");
-	writeFileSync(oldImage, "png-bytes");
+	writeFileSync(oldImage, PNG_BYTES);
 	const assetDir = path.join(ownedRoot, "new-entry");
 	const unrelatedTmp = path.join(scratch, "unrelated-tmp");
 	mkdirSync(unrelatedTmp);
@@ -124,34 +211,110 @@ test("persistTmpImages transfers images from an older owned asset directory", as
 	assert.deepEqual(result.transferredAssetDirs, [oldAssetDir]);
 });
 
-test("persistTmpImages handles multiple images with distinct copies", async () => {
-	const a = tmpImage("a.png");
-	const b = tmpImage("b.jpg");
-	const assetDir = path.join(scratch, "assets", "entry-4");
-	const result = await persistTmpImages({
-		text: `${a} ${b}`,
-		assetDir,
-		tmpDir: tmpRoot,
-	});
+test("persistTmpImages enforces the per-image byte boundary", async () => {
+	const accepted = clipboardImage();
+	const acceptedAssetDir = path.join(scratch, "assets", "accepted-size");
+	assert.equal(
+		(
+			await persistTmpImages({
+				text: accepted,
+				assetDir: acceptedAssetDir,
+				tmpDir: tmpRoot,
+				limits: SMALL_IMAGE_LIMITS,
+			})
+		).count,
+		1,
+	);
 
-	assert.equal(result.count, 2);
-	assert.ok(existsSync(path.join(assetDir, "00-a.png")));
-	assert.ok(existsSync(path.join(assetDir, "01-b.jpg")));
+	const oversized = clipboardImage("png", Buffer.concat([PNG_BYTES, Buffer.of(0)]));
+	const rejectedAssetDir = path.join(scratch, "assets", "rejected-size");
+	await assert.rejects(
+		() =>
+			persistTmpImages({
+				text: oversized,
+				assetDir: rejectedAssetDir,
+				tmpDir: tmpRoot,
+				limits: SMALL_IMAGE_LIMITS,
+			}),
+		/image exceeds.*byte limit/,
+	);
+	assert.equal(existsSync(rejectedAssetDir), false);
 });
 
-test("persistTmpImages removes every staged copy when a later copy fails", async () => {
-	const a = tmpImage("a.png");
-	const b = tmpImage("b.jpg");
-	const assetDir = path.join(scratch, "assets", "rollback-entry");
-	mkdirSync(path.join(assetDir, "01-b.jpg"), { recursive: true });
+test("persistTmpImages enforces cumulative bytes before creating assets", async () => {
+	const first = clipboardImage();
+	const second = clipboardImage("png", Buffer.concat([PNG_BYTES, Buffer.of(1)]));
+	const assetDir = path.join(scratch, "assets", "cumulative-limit");
 
-	await assert.rejects(() => persistTmpImages({ text: `${a} ${b}`, assetDir, tmpDir: tmpRoot }));
+	await assert.rejects(
+		() =>
+			persistTmpImages({
+				text: `${first} ${second}`,
+				assetDir,
+				tmpDir: tmpRoot,
+				limits: {
+					...SMALL_IMAGE_LIMITS,
+					maxImageBytes: PNG_BYTES.length + 1,
+					maxDraftBytes: PNG_BYTES.length * 2,
+				},
+			}),
+		/draft images exceed.*byte limit/,
+	);
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persistTmpImages enforces unique image count before creating assets", async () => {
+	const images = [
+		clipboardImage(),
+		clipboardImage("png", Buffer.concat([PNG_BYTES, Buffer.of(1)])),
+		clipboardImage("png", Buffer.concat([PNG_BYTES, Buffer.of(2)])),
+	];
+	const assetDir = path.join(scratch, "assets", "count-limit");
+
+	await assert.rejects(
+		() =>
+			persistTmpImages({
+				text: images.join(" "),
+				assetDir,
+				tmpDir: tmpRoot,
+				limits: {
+					...SMALL_IMAGE_LIMITS,
+					maxImageBytes: PNG_BYTES.length + 1,
+					maxDraftBytes: PNG_BYTES.length * 3 + 2,
+				},
+			}),
+		/draft exceeds.*image limit/,
+	);
+	assert.equal(existsSync(assetDir), false);
+});
+
+test("persisted image bytes do not depend on the later temporary source", async () => {
+	const image = clipboardImage();
+	const assetDir = path.join(scratch, "assets", "durable-copy");
+	const result = await persistTmpImages({ text: image, assetDir, tmpDir: tmpRoot });
+	const persisted = result.text;
+
+	writeFileSync(image, Buffer.from("changed"));
+	rmSync(image);
+
+	assert.deepEqual(readFileSync(persisted), PNG_BYTES);
+});
+
+test("persistTmpImages removes every staged copy when a later write fails", async () => {
+	const first = clipboardImage();
+	const second = clipboardImage("jpg");
+	const assetDir = path.join(scratch, "assets", "rollback-entry");
+	mkdirSync(path.join(assetDir, `01-${path.basename(second)}`), { recursive: true });
+
+	await assert.rejects(() =>
+		persistTmpImages({ text: `${first} ${second}`, assetDir, tmpDir: tmpRoot }),
+	);
 
 	assert.equal(existsSync(assetDir), false);
 });
 
 test("persistTmpImages repairs existing asset directory permissions", async () => {
-	const image = tmpImage("private.png");
+	const image = clipboardImage();
 	const assetsRoot = path.join(scratch, "permissive-assets");
 	const assetDir = path.join(assetsRoot, "entry-5");
 	mkdirSync(assetDir, { recursive: true });
@@ -165,7 +328,7 @@ test("persistTmpImages repairs existing asset directory permissions", async () =
 });
 
 test("persistTmpImages rejects a symbolic-link asset root", async () => {
-	const image = tmpImage("private.png");
+	const image = clipboardImage();
 	const target = path.join(scratch, "asset-target");
 	const assetsRoot = path.join(scratch, "linked-assets");
 	mkdirSync(target);
