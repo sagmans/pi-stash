@@ -14,6 +14,7 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
 import {
+	type Component,
 	Container,
 	type Focusable,
 	getKeybindings,
@@ -48,6 +49,9 @@ export const defaultKeyMatcher: KeyMatcher = (data, action) =>
 
 const MAX_VISIBLE = 10;
 const LABEL_WIDTH = 50;
+const PREVIEW_VIEWPORT_ROWS = 10;
+const PREVIEW_PAGE_ROWS = PREVIEW_VIEWPORT_ROWS - 1;
+const EMPTY_DRAFT_LABEL = "(empty draft)";
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -99,9 +103,16 @@ export function listFooter(theme: OverlayTheme): string {
 }
 
 export function detailFooter(theme: OverlayTheme): string {
+	const up = keyText("tui.select.up" as Keybinding);
+	const down = keyText("tui.select.down" as Keybinding);
+	const pageUp = keyText("tui.select.pageUp" as Keybinding);
+	const pageDown = keyText("tui.select.pageDown" as Keybinding);
 	const confirm = keyText("tui.select.confirm" as Keybinding);
 	const cancel = keyText("tui.select.cancel" as Keybinding);
-	return theme.fg("dim", ` ${confirm} restore · d drop · ${cancel}/← back`);
+	return theme.fg(
+		"dim",
+		` d drop · ${confirm} restore · ${up}${down} scroll · ${pageUp}/${pageDown} page · Home/End bounds · ${cancel}/← back`,
+	);
 }
 
 export function detailHeader(item: IndexedEntry, theme: OverlayTheme): string {
@@ -118,8 +129,73 @@ export function detailBody(item: IndexedEntry, theme: OverlayTheme): string[] {
 	const lines: string[] = [];
 	const message = item.entry.message?.trim();
 	if (message) lines.push(theme.fg("muted", `note: ${sanitizeTerminalLine(message)}`));
-	lines.push(theme.fg("text", sanitizeTerminalText(item.entry.text)));
+	const text = sanitizeTerminalText(item.entry.text);
+	lines.push(theme.fg("text", text.length > 0 ? text : EMPTY_DRAFT_LABEL));
 	return lines;
+}
+
+class DraftPreviewComponent implements Component {
+	private readonly content: Text;
+	private offset = 0;
+	private lineCount = 0;
+	private pinnedToEnd = false;
+
+	constructor(
+		content: string,
+		private readonly theme: OverlayTheme,
+	) {
+		this.content = new Text(content, 1, 0);
+	}
+
+	scroll(lines: number): void {
+		this.pinnedToEnd = false;
+		this.offset = Math.max(0, this.offset + lines);
+		this.clampOffset();
+	}
+
+	page(direction: -1 | 1): void {
+		this.scroll(direction * PREVIEW_PAGE_ROWS);
+	}
+
+	toStart(): void {
+		this.pinnedToEnd = false;
+		this.offset = 0;
+	}
+
+	toEnd(): void {
+		this.pinnedToEnd = true;
+	}
+
+	render(width: number): string[] {
+		const contentLines = this.content.render(width);
+		this.lineCount = contentLines.length;
+		if (this.pinnedToEnd) this.offset = this.maxOffset();
+		else this.clampOffset();
+
+		const viewport = contentLines.slice(this.offset, this.offset + PREVIEW_VIEWPORT_ROWS);
+		const blank = " ".repeat(Math.max(0, width));
+		while (viewport.length < PREVIEW_VIEWPORT_ROWS) viewport.push(blank);
+		const first = this.lineCount === 0 ? 0 : this.offset + 1;
+		const last = Math.min(this.lineCount, this.offset + PREVIEW_VIEWPORT_ROWS);
+		const position = this.theme.fg("dim", ` lines ${first}–${last}/${this.lineCount}`);
+		return [
+			truncateToWidth(detailFooter(this.theme), width, "…", true),
+			truncateToWidth(position, width, "…", true),
+			...viewport,
+		];
+	}
+
+	invalidate(): void {
+		this.content.invalidate();
+	}
+
+	private clampOffset(): void {
+		this.offset = Math.min(this.offset, this.maxOffset());
+	}
+
+	private maxOffset(): number {
+		return Math.max(0, this.lineCount - PREVIEW_VIEWPORT_ROWS);
+	}
 }
 
 export class StashOverlayComponent extends Container implements Focusable {
@@ -136,6 +212,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private query = "";
 	private mode: "list" | "detail" = "list";
 	private currentDetail: IndexedEntry | undefined;
+	private currentPreview: DraftPreviewComponent | undefined;
 	private dropInProgress = false;
 	private cancelled = false;
 	private pendingDrop: Promise<void> = Promise.resolve();
@@ -226,6 +303,18 @@ export class StashOverlayComponent extends Container implements Focusable {
 			this.pendingDrop = this.dropCurrent(current);
 		} else if (this.matches(data, "tui.select.cancel") || matchesKey(data, "left")) {
 			this.backToList();
+		} else if (this.matches(data, "tui.select.up")) {
+			this.currentPreview?.scroll(-1);
+		} else if (this.matches(data, "tui.select.down")) {
+			this.currentPreview?.scroll(1);
+		} else if (this.matches(data, "tui.select.pageUp")) {
+			this.currentPreview?.page(-1);
+		} else if (this.matches(data, "tui.select.pageDown")) {
+			this.currentPreview?.page(1);
+		} else if (matchesKey(data, "home")) {
+			this.currentPreview?.toStart();
+		} else if (matchesKey(data, "end")) {
+			this.currentPreview?.toEnd();
 		}
 	}
 
@@ -249,12 +338,17 @@ export class StashOverlayComponent extends Container implements Focusable {
 		if (!item) return;
 		this.mode = "detail";
 		this.currentDetail = item;
+		this.currentPreview = new DraftPreviewComponent(
+			detailBody(item, this.theme).join("\n"),
+			this.theme,
+		);
 		this.updateBody();
 	}
 
 	private backToList(): void {
 		this.mode = "list";
 		this.currentDetail = undefined;
+		this.currentPreview = undefined;
 		this.updateBody();
 	}
 
@@ -296,7 +390,9 @@ export class StashOverlayComponent extends Container implements Focusable {
 			this.footerText.setText(listFooter(this.theme));
 			this.renderListBody();
 		} else {
-			this.footerText.setText(detailFooter(this.theme));
+			// Preview controls live above the scroll viewport so max-height clipping
+			// cannot hide restore/drop guidance below a long draft.
+			this.footerText.setText("");
 			this.renderDetailBody();
 		}
 	}
@@ -326,18 +422,23 @@ export class StashOverlayComponent extends Container implements Focusable {
 		const item = this.currentDetail;
 		if (!item) return;
 		this.body.addChild(new Text(detailHeader(item, this.theme), 0, 0));
-		this.body.addChild(new Spacer(1));
-		for (const line of detailBody(item, this.theme)) {
-			// Text wraps each paragraph at render width; no manual wrapping needed.
-			this.body.addChild(new Text(line, 1, 0));
-		}
-		this.body.addChild(new Spacer(1));
-		this.body.addChild(new Text(this.theme.fg("dim", `id ${item.entry.id.slice(0, 4)}`), 1, 0));
+		this.body.addChild(new Text(this.theme.fg("dim", ` id ${item.entry.id.slice(0, 4)}`), 0, 0));
+		this.currentPreview ??= new DraftPreviewComponent(
+			detailBody(item, this.theme).join("\n"),
+			this.theme,
+		);
+		this.body.addChild(this.currentPreview);
 	}
 
 	override invalidate(): void {
 		// Rebuild themed content: caches hold ANSI from the prior theme.
 		super.invalidate();
+		if (this.currentDetail) {
+			this.currentPreview = new DraftPreviewComponent(
+				detailBody(this.currentDetail, this.theme).join("\n"),
+				this.theme,
+			);
+		}
 		this.updateBody();
 	}
 }

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { CURSOR_MARKER } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
 
 import {
 	defaultKeyMatcher,
@@ -104,6 +104,8 @@ test("detailHeader shows index and image count", () => {
 const KEY_GLYPH: Record<string, string> = {
 	"tui.select.up": "U",
 	"tui.select.down": "D",
+	"tui.select.pageUp": "P",
+	"tui.select.pageDown": "N",
 	"tui.select.confirm": "E",
 	"tui.select.cancel": "X",
 	"tui.input.tab": "T",
@@ -239,6 +241,76 @@ test("detail: cancel returns to list without dropping", () => {
 	const rendered = overlay.render(60);
 	assert.ok(rendered.some((l) => l.includes("filter")));
 	assert.equal(calls.drop.length, 0);
+});
+
+test("detail preview scroll reaches both bounds while context and controls stay visible", () => {
+	const draft = Array.from(
+		{ length: 30 },
+		(_, index) => `line-${String(index).padStart(2, "0")}`,
+	).join("\n");
+	const { overlay } = harness([entry("long-entry", draft)]);
+	overlay.handleInput("T");
+
+	let rendered = renderedText(overlay);
+	assert.ok(rendered.includes("line-00"));
+	assert.equal(rendered.includes("line-29"), false);
+	assert.ok(rendered.includes("[0] preview"));
+	assert.ok(rendered.includes("scroll"));
+	assert.ok(rendered.includes("d drop"));
+
+	for (let index = 0; index < 40; index += 1) overlay.handleInput("D");
+	rendered = renderedText(overlay);
+	assert.equal(rendered.includes("line-00"), false);
+	assert.ok(rendered.includes("line-29"));
+	assert.ok(rendered.includes("[0] preview"));
+	assert.ok(rendered.includes("d drop"));
+
+	overlay.handleInput("\u001b[H");
+	assert.ok(renderedText(overlay).includes("line-00"));
+	overlay.handleInput("\u001b[F");
+	assert.ok(renderedText(overlay).includes("line-29"));
+});
+
+test("detail preview handles empty and single-line drafts", () => {
+	for (const [text, expected] of [
+		["", "(empty draft)"],
+		["one line", "one line"],
+	] as const) {
+		const { overlay } = harness([entry("entry", text)]);
+		overlay.handleInput("T");
+		assert.ok(renderedText(overlay).includes(expected));
+	}
+});
+
+test("detail preview keeps wide Unicode within columns and bottom reachable after resize", () => {
+	const draft = `${"界".repeat(24)}\n${Array.from({ length: 20 }, (_, index) => `row-${index}`).join("\n")}\nLAST`;
+	const { overlay } = harness([entry("wide", draft)]);
+	overlay.handleInput("T");
+	overlay.handleInput("\u001b[F");
+
+	const wide = overlay.render(50);
+	const narrow = overlay.render(18);
+
+	assert.ok(wide.some((line) => line.includes("LAST")));
+	assert.ok(narrow.some((line) => line.includes("LAST")));
+	assert.equal(
+		narrow.some((line) => visibleWidth(line) > 18),
+		false,
+	);
+});
+
+test("detail scrolling is independent from list selection", () => {
+	const { overlay, calls } = harness([
+		entry("first", "short"),
+		entry("second", Array.from({ length: 20 }, (_, index) => `second-${index}`).join("\n")),
+	]);
+	overlay.handleInput("D");
+	overlay.handleInput("T");
+	overlay.handleInput("N");
+	overlay.handleInput("X");
+	overlay.handleInput("E");
+
+	assert.equal(calls.restore[0]?.id, "second");
 });
 
 test("search filters the list by text", () => {
