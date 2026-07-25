@@ -100,23 +100,41 @@ function extensionHarness(): {
 	events: {
 		emit(event: string, payload?: unknown): void;
 		on(event: string, handler: (payload?: unknown) => void): () => void;
+		dispatchPrefix(key: string): number;
 	};
 } {
 	const handlers = new Map<string, ExtensionHandler>();
 	const commands = new Map<string, RegisteredCommand>();
 	const eventHandlers = new Map<string, Set<(payload?: unknown) => void>>();
+	const prefixClaims = new Map<string, { requester: string; key: string; eventId: string }>();
 	const events = {
 		emit(event: string, payload?: unknown): void {
 			eventHandlers.get(event)?.forEach((handler) => {
 				handler(payload);
 			});
-			if (event === "prefix-keybindings:query") this.emit("prefix-keybindings:available");
+			if (event === "prefix-keybindings:query") {
+				this.emit("prefix-keybindings:available", {
+					available: true,
+					prefixKey: "ctrl+x",
+				});
+			}
+			if (event === "prefix-keybindings:register") {
+				const claim = payload as { requester: string; key: string; eventId: string };
+				if (!prefixClaims.has(claim.key)) prefixClaims.set(claim.key, claim);
+			}
 		},
 		on(event: string, handler: (payload?: unknown) => void): () => void {
 			const registered = eventHandlers.get(event) ?? new Set();
 			registered.add(handler);
 			eventHandlers.set(event, registered);
 			return () => registered.delete(handler);
+		},
+		dispatchPrefix(key: string): number {
+			const claim = prefixClaims.get(key);
+			if (!claim) return 0;
+			const deliveries = eventHandlers.get(claim.eventId)?.size ?? 0;
+			this.emit(claim.eventId, { requester: claim.requester, key: claim.key });
+			return deliveries;
 		},
 	};
 	const pi = {
@@ -880,6 +898,58 @@ test("refreshWidget populates with entries and clears when empty", async () => {
 	assert.ok(ui.widgets.has("pi-stash"));
 });
 
+test("session startup shows the effective prefix binding in the stash widget", async () => {
+	const { pi, handlers } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		const cwd = "/binding-hint";
+		const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
+		await (await loadStashStore(paths)).add({ text: "saved draft" });
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		assert.ok(ui.widgets.get("pi-stash")?.[0]?.includes("ctrl+x then shift+s to open"));
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("duplicate extension instances perform one prefix mutation", async () => {
+	const { pi, handlers, events } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy-one") });
+		const firstStart = handlers.get("session_start");
+		const firstShutdown = handlers.get("session_shutdown");
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy-two") });
+		const secondStart = handlers.get("session_start");
+		const secondShutdown = handlers.get("session_shutdown");
+		const ui = fakeUi();
+		const ctx = { cwd: "/duplicate-extension", mode: "tui", hasUI: true, ui };
+		await firstStart?.({ type: "session_start" }, ctx);
+		await secondStart?.({ type: "session_start" }, ctx);
+		ui.editorText = "stash once";
+
+		assert.equal(events.dispatchPrefix("s"), 1);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await firstShutdown?.({ type: "session_shutdown" }, ctx);
+		await secondShutdown?.({ type: "session_shutdown" }, ctx);
+
+		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+		assert.equal((await loadStashStore(paths)).entryCount, 1);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
 test("session shutdown cancels prefix operations that have not started", async () => {
 	const { pi, handlers, events } = extensionHarness();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -891,8 +961,8 @@ test("session shutdown cancels prefix operations that have not started", async (
 		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
 		ui.editorText = "one draft";
 
-		events.emit("pi-stash:stash");
-		events.emit("pi-stash:stash");
+		events.dispatchPrefix("s");
+		events.dispatchPrefix("s");
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 
 		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));

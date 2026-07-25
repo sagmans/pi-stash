@@ -28,6 +28,14 @@ test("renders header and one line per entry with LIFO index", () => {
 	assert.ok(lines[2]?.includes("oldest"));
 });
 
+test("omits the shortcut hint when no binding is available", () => {
+	const [header] = renderWidgetLines([entry()], { openHint: false });
+
+	assert.equal(header?.includes("to open"), false);
+	assert.equal(header?.includes("(false)"), false);
+	assert.ok(header?.includes("1"));
+});
+
 test("prefers message over first-line preview", () => {
 	const lines = renderWidgetLines(
 		[entry({ text: "body line one\nbody line two", message: "my label" })],

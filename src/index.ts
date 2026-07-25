@@ -42,8 +42,10 @@ import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
 import { themedWidgetLines } from "./widget.ts";
 
 const STASH_WIDGET_KEY = "pi-stash";
-const STASH_ACTION_EVENT = "pi-stash:stash";
-const LIST_ACTION_EVENT = "pi-stash:list";
+const PREFIX_BINDING_NAMESPACE = "@sagmans/pi-stash";
+const STASH_CLAIM_KEY = "s";
+const LIST_CLAIM_KEY = "S";
+const widgetOpenHints = new WeakMap<StashUi, string>();
 const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before restoring";
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
 const REFRESH_FAILED_MESSAGE = "Failed to refresh stash";
@@ -100,7 +102,11 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 	}
 	ui.setWidget(
 		STASH_WIDGET_KEY,
-		store.entries.length > 0 ? themedWidgetLines(store.entries, ui.theme) : undefined,
+		store.entries.length > 0
+			? themedWidgetLines(store.entries, ui.theme, {
+					openHint: widgetOpenHints.get(ui) ?? false,
+				})
+			: undefined,
 	);
 }
 
@@ -718,11 +724,23 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 }
 
 /** prefix-keybindings claims: `s` stashes, `shift+s` opens the overlay. */
-function buildStashClaims(ctx: SessionCtx, getter: ActiveGetter): Claim[] {
+function buildStashClaims(ctx: SessionCtx, getter: ActiveGetter, requester: string): Claim[] {
 	return [
-		{ key: "s", eventId: STASH_ACTION_EVENT, onFire: () => fireStash(getter) },
-		{ key: "S", eventId: LIST_ACTION_EVENT, onFire: () => fireList(getter, ctx) },
+		{
+			key: STASH_CLAIM_KEY,
+			eventId: `${requester}:stash`,
+			onFire: () => fireStash(getter),
+		},
+		{
+			key: LIST_CLAIM_KEY,
+			eventId: `${requester}:list`,
+			onFire: () => fireList(getter, ctx),
+		},
 	];
+}
+
+function bindingOpenHint(prefixKey: string): string {
+	return `${prefixKey} then shift+s to open`;
 }
 
 function reportActionFailure(
@@ -772,14 +790,29 @@ export type PiStashInstallOptions = {
 };
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
+	const bindingRequester = `${PREFIX_BINDING_NAMESPACE}:${createNewId()}`;
 	let active: ActiveSession | undefined;
 	let startupUnavailableReason: string | undefined;
+
+	const closeActiveSession = async (closing: ActiveSession): Promise<void> => {
+		closing.accepting = false;
+		closing.abort.abort();
+		closing.stopBinding();
+		await closing.pending;
+		widgetOpenHints.delete(closing.ui);
+		// Clear only after queued work settles, or a late refresh can leak the
+		// previous worktree's state into a replacement session.
+		closing.ui.setWidget(STASH_WIDGET_KEY, undefined);
+	};
 	const requireActiveForCommand = makeRequireActive(
 		() => active,
 		() => startupUnavailableReason,
 	);
 
 	pi.on("session_start", async (_event, ctx) => {
+		const replacing = active;
+		active = undefined;
+		if (replacing) await closeActiveSession(replacing);
 		if (!isSupportedSession(ctx)) return;
 
 		startupUnavailableReason = undefined;
@@ -819,17 +852,27 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			}
 			return;
 		}
-		await drainAssetCleanup(ctx.ui as StashUi, store, paths);
-		refreshWidget(ctx.ui as StashUi, store);
+		const ui = ctx.ui as StashUi;
+		await drainAssetCleanup(ui, store, paths);
+		widgetOpenHints.delete(ui);
+		refreshWidget(ui, store);
 
 		const abort = new AbortController();
 		const stopBinding = startStashBinding({
 			events: pi.events,
-			claims: buildStashClaims(ctx, () => active),
+			requester: bindingRequester,
+			claims: buildStashClaims(ctx, () => active, bindingRequester),
+			onActive: (prefixKey) => {
+				if (abort.signal.aborted) return;
+				widgetOpenHints.set(ui, bindingOpenHint(prefixKey));
+				refreshWidget(ui, store);
+			},
 			onInert: () => {
 				if (abort.signal.aborted) return;
+				widgetOpenHints.delete(ui);
+				refreshWidget(ui, store);
 				safeNotify(
-					ctx.ui as StashUi,
+					ui,
 					"pi-stash: prefix-keybindings not detected; use /stash and /stash-list",
 					"warning",
 				);
@@ -837,7 +880,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		});
 
 		active = {
-			ui: ctx.ui as StashUi,
+			ui,
 			store,
 			paths,
 			stopBinding,
@@ -851,13 +894,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		const closing = active;
 		if (!closing) return;
 		active = undefined;
-		closing.accepting = false;
-		closing.abort.abort();
-		closing.stopBinding();
-		await closing.pending;
-		// Clear the widget only after queued work settles, or a late refresh can
-		// leak the old worktree's state into the next session.
-		closing.ui.setWidget(STASH_WIDGET_KEY, undefined);
+		await closeActiveSession(closing);
 	});
 
 	registerStashCommands(pi, requireActiveForCommand);

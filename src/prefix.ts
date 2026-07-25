@@ -11,14 +11,13 @@
 //                  -> on `prefix-keybindings:available` emit
 //                     `prefix-keybindings:register { requester, key, eventId }`
 //                     for each claimed key
-//                  -> on the key's action event, invoke the matching callback
+//                  -> on the key's owned action event, invoke its callback
 //   no `available` -> after the window, invoke `onInert` once and stay dormant
 //   session_shutdown / cleanup -> detach every listener and cancel the timer
 //
 // A claim is rejected silently by prefix-keybindings when the key is already
-// taken (built-in action, plannotator, preset, or another extension). In that
-// case the action event never fires; the slash commands remain available as a
-// reliable fallback.
+// taken. Per-instance requester and event IDs keep the winning registration
+// isolated, while slash commands remain the reliable fallback.
 
 const PREFIX_KEYBINDINGS_QUERY_EVENT = "prefix-keybindings:query";
 const PREFIX_KEYBINDINGS_AVAILABLE_EVENT = "prefix-keybindings:available";
@@ -43,9 +42,13 @@ export type Claim = {
 
 export type StashBindingOptions = {
 	events: EventBus;
+	/** Unique package-instance identity used to isolate duplicate loads. */
+	requester: string;
 	claims: Claim[];
 	/** Invoked once if prefix-keybindings never answers. */
 	onInert: () => void;
+	/** Reports the provider's effective prefix for truthful UI hints. */
+	onActive?: (prefixKey: string) => void;
 	schedule?: Scheduler;
 	availabilityTimeoutMs?: number;
 };
@@ -55,46 +58,63 @@ const defaultScheduler: Scheduler = (fn, ms) => {
 	return () => clearTimeout(handle);
 };
 
+function availablePrefix(raw: unknown): string | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const { available, prefixKey } = raw as Record<string, unknown>;
+	if (available !== true || typeof prefixKey !== "string") return undefined;
+	const normalized = prefixKey.trim();
+	return normalized.length > 0 ? normalized : undefined;
+}
+
+function isOwnedAction(raw: unknown, requester: string, key: string): boolean {
+	if (typeof raw !== "object" || raw === null) return false;
+	const action = raw as Record<string, unknown>;
+	return action.requester === requester && action.key === key;
+}
+
 export function startStashBinding(opts: StashBindingOptions): () => void {
 	const schedule = opts.schedule ?? defaultScheduler;
 	const timeoutMs = opts.availabilityTimeoutMs ?? DEFAULT_AVAILABILITY_TIMEOUT_MS;
 
-	// First-wins settlement: either the prefix extension answers (register every
-	// claim) or the window expires (go inert). Once settled, further events are
-	// no-ops, so a late `available` after going inert cannot belatedly activate.
+	// First-wins settlement keeps competing availability announcements from
+	// changing a session's effective binding after claims were registered.
 	let outcome: "claimed" | "inert" | null = null;
 	let cleaned = false;
 	const cleanups: Array<() => void> = [];
 
 	const cancelAvailabilityTimer = schedule(() => {
-		if (outcome) return;
+		if (cleaned || outcome) return;
 		outcome = "inert";
 		opts.onInert();
 	}, timeoutMs);
 
-	const offAvailable = opts.events.on(PREFIX_KEYBINDINGS_AVAILABLE_EVENT, () => {
-		if (outcome) return;
+	const offAvailable = opts.events.on(PREFIX_KEYBINDINGS_AVAILABLE_EVENT, (raw) => {
+		if (cleaned || outcome) return;
+		const prefixKey = availablePrefix(raw);
+		if (!prefixKey) return;
 		outcome = "claimed";
 		cancelAvailabilityTimer();
 		for (const claim of opts.claims) {
 			opts.events.emit(PREFIX_KEYBINDINGS_REGISTER_EVENT, {
-				requester: "pi-stash",
+				requester: opts.requester,
 				key: claim.key,
 				eventId: claim.eventId,
 			});
 		}
+		opts.onActive?.(prefixKey);
 	});
 
 	for (const claim of opts.claims) {
-		const off = opts.events.on(claim.eventId, () => {
-			if (outcome === "claimed") claim.onFire();
+		const off = opts.events.on(claim.eventId, (raw) => {
+			if (!cleaned && outcome === "claimed" && isOwnedAction(raw, opts.requester, claim.key)) {
+				claim.onFire();
+			}
 		});
 		cleanups.push(off);
 	}
 
 	cleanups.push(offAvailable, cancelAvailabilityTimer);
-
-	opts.events.emit(PREFIX_KEYBINDINGS_QUERY_EVENT, { requester: "pi-stash" });
+	opts.events.emit(PREFIX_KEYBINDINGS_QUERY_EVENT, { requester: opts.requester });
 
 	return () => {
 		if (cleaned) return;

@@ -13,7 +13,8 @@ const DEFAULT_PREVIEW_WIDTH = 60;
 const DEFAULT_OPEN_HINT = "prefix+shift+s to open";
 
 export type RenderOptions = {
-	openHint?: string;
+	/** False suppresses a shortcut hint when no binding provider is active. */
+	openHint?: string | false;
 	previewWidth?: number;
 	maxLines?: number;
 };
@@ -54,11 +55,13 @@ export function themedWidgetLines(
 ): string[] {
 	if (entries.length === 0) return [];
 
-	const openHint = sanitizeTerminalLine(options.openHint ?? DEFAULT_OPEN_HINT);
+	const configuredHint = options.openHint ?? DEFAULT_OPEN_HINT;
+	const openHint = configuredHint === false ? undefined : sanitizeTerminalLine(configuredHint);
 	const previewWidth = options.previewWidth ?? DEFAULT_PREVIEW_WIDTH;
 	const maxLines = options.maxLines ?? MAX_WIDGET_LINES;
+	const details = openHint ? `(${openHint}) · ${entries.length}` : String(entries.length);
 
-	const header = ` ${theme.fg("accent", "Stash")} ${theme.fg("muted", `(${openHint}) · ${entries.length}`)}`;
+	const header = ` ${theme.fg("accent", "Stash")} ${theme.fg("muted", details)}`;
 	const lines: string[] = [header];
 	const visibleCount = Math.min(entries.length, maxLines);
 
