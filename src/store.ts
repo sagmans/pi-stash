@@ -20,7 +20,7 @@ import {
 	createEmptyStashFile,
 	createNewId,
 	isRecord,
-	normalizeStashFile,
+	parseStashFile,
 	type ResolvedEntry,
 	resolveBySelector,
 	STASH_SCHEMA_VERSION,
@@ -36,6 +36,10 @@ const LOCK_TIMEOUT_MS = 2000;
 const LOCK_STALE_MS = 30_000;
 const LOCK_OWNER_FILE = "owner.json";
 const LOCK_RECLAIM_SUFFIX = ".reclaim";
+const ACTIVE_CLEANUP_MESSAGE = "active stash id queued for cleanup";
+const DUPLICATE_STASH_ID_MESSAGE = "duplicate stash id";
+const INVALID_ASSET_COUNT_MESSAGE = "invalid asset count";
+const PENDING_STASH_ID_MESSAGE = "stash id pending asset cleanup";
 
 type LockOwner = {
 	pid: number;
@@ -56,7 +60,7 @@ export type AddEntryInput = {
 };
 
 export type LoadResult =
-	| { kind: "ready"; file: StashFile }
+	| { kind: "ready"; file: StashFile; migratedFrom?: number }
 	| { kind: "corrupt"; quarantinedTo?: string }
 	| { kind: "unsupported"; schemaVersion: number };
 
@@ -103,11 +107,13 @@ export class StashStore {
 	async add(input: AddEntryInput): Promise<StashEntry> {
 		const id = input.id ?? createNewId();
 		assertSafeEntryId(id);
+		assertSafeAssetCount(input.assetCount);
 		const cleanupIds = [...(input.cleanupIds ?? [])];
 		for (const cleanupId of cleanupIds) assertSafeEntryId(cleanupId);
 		return withStashLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
+			assertAvailableOwnership(this.file, id, cleanupIds);
 			const entry: StashEntry = {
 				id,
 				text: input.text,
@@ -199,7 +205,12 @@ export class StashStore {
 	}
 
 	private async reloadFresh(): Promise<void> {
-		const loaded = await readStashFile(this.stashFile, this.paths.sanitized, this.now());
+		const loaded = await readCurrentStashFile(
+			this.stashFile,
+			this.paths.sanitized,
+			this.now(),
+			this.write,
+		);
 		if (loaded.kind === "ready") {
 			this.file = loaded.file;
 			this.unsupportedSchemaVersion = undefined;
@@ -220,6 +231,29 @@ export class StashStore {
 	}
 }
 
+function assertAvailableOwnership(
+	file: StashFile,
+	entryId: string,
+	cleanupIds: readonly string[],
+): void {
+	if (file.entries.some((entry) => entry.id === entryId)) {
+		throw new Error(DUPLICATE_STASH_ID_MESSAGE);
+	}
+	if (file.pendingAssetCleanup.includes(entryId)) {
+		throw new Error(PENDING_STASH_ID_MESSAGE);
+	}
+	const activeIds = new Set(file.entries.map((entry) => entry.id));
+	if (cleanupIds.includes(entryId) || cleanupIds.some((id) => activeIds.has(id))) {
+		throw new Error(ACTIVE_CLEANUP_MESSAGE);
+	}
+}
+
+function assertSafeAssetCount(value: number | undefined): void {
+	if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+		throw new Error(INVALID_ASSET_COUNT_MESSAGE);
+	}
+}
+
 function mergeCleanupIds(current: readonly string[], added: readonly string[]): string[] {
 	return [...new Set([...current, ...added])];
 }
@@ -230,9 +264,21 @@ export async function loadStashStore(
 	write: StashWriter = writeStashFile,
 ): Promise<StashStore> {
 	const loaded = await withStashLock(paths.stashFile, () =>
-		readStashFile(paths.stashFile, paths.sanitized, now),
+		readCurrentStashFile(paths.stashFile, paths.sanitized, now, write),
 	);
 	return new StashStore(paths, loaded, now, write);
+}
+
+async function readCurrentStashFile(
+	filePath: string,
+	cwdKey: string,
+	now: number | Clock,
+	write: StashWriter,
+): Promise<LoadResult> {
+	const loaded = await readStashFile(filePath, cwdKey, now);
+	if (loaded.kind !== "ready" || loaded.migratedFrom === undefined) return loaded;
+	await write(filePath, loaded.file);
+	return { kind: "ready", file: loaded.file };
 }
 
 async function readStashFile(
@@ -257,17 +303,18 @@ async function readStashFile(
 	} catch {
 		return await quarantineCorrupt(filePath);
 	}
+	const parsed = parseStashFile(raw);
+	if (parsed?.file.cwd === cwdKey) {
+		return { kind: "ready", file: parsed.file, migratedFrom: parsed.migratedFrom };
+	}
 	if (
 		isRecord(raw) &&
 		typeof raw.schemaVersion === "number" &&
 		Number.isSafeInteger(raw.schemaVersion) &&
-		raw.schemaVersion > 0 &&
-		raw.schemaVersion !== STASH_SCHEMA_VERSION
+		raw.schemaVersion > STASH_SCHEMA_VERSION
 	) {
 		return { kind: "unsupported", schemaVersion: raw.schemaVersion };
 	}
-	const parsed = normalizeStashFile(raw);
-	if (parsed?.cwd === cwdKey) return { kind: "ready", file: parsed };
 	return await quarantineCorrupt(filePath);
 }
 

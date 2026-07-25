@@ -10,8 +10,14 @@ import {
 	type StashEntry,
 } from "../src/types.ts";
 
-const VALID_ENTRY: StashEntry = { id: "id-1", text: "hello", createdAt: 1000 };
+const CURRENT_SCHEMA_VERSION = 2;
+const FRACTIONAL_ASSET_COUNT = 0.5;
 const INVALID_DATE_TIMESTAMP = 8_640_000_000_000_001;
+const VALID_ENTRY: StashEntry = { id: "id-1", text: "hello", createdAt: 1000 };
+
+test("schema version identifies the ownership-safe format", () => {
+	assert.equal(STASH_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION);
+});
 
 test("normalizeEntry accepts a minimal valid entry", () => {
 	assert.deepEqual(normalizeEntry(VALID_ENTRY), VALID_ENTRY);
@@ -31,6 +37,7 @@ test("normalizeEntry rejects missing id or non-string text", () => {
 	assert.equal(normalizeEntry({ id: "", text: "x", createdAt: 1 }), undefined);
 	assert.equal(normalizeEntry({ id: "x", text: "x", createdAt: "bad" }), undefined);
 	assert.equal(normalizeEntry({ ...VALID_ENTRY, assetCount: -1 }), undefined);
+	assert.equal(normalizeEntry({ ...VALID_ENTRY, assetCount: FRACTIONAL_ASSET_COUNT }), undefined);
 	assert.equal(normalizeEntry({ ...VALID_ENTRY, id: "../escape" }), undefined);
 	assert.equal(normalizeEntry({ ...VALID_ENTRY, id: "." }), undefined);
 	assert.equal(normalizeEntry({ ...VALID_ENTRY, createdAt: INVALID_DATE_TIMESTAMP }), undefined);
@@ -45,14 +52,26 @@ test("normalizeStashFile rejects wrong schema version and bad entries", () => {
 	assert.equal(normalizeStashFile({ ...base, pendingAssetCleanup: ["../escape"] }), undefined);
 });
 
-test("normalizeStashFile defaults legacy cleanup state and preserves safe ids", () => {
-	const legacy: Record<string, unknown> = { ...createEmptyStashFile("--cwd", 1) };
-	delete legacy.pendingAssetCleanup;
-	assert.deepEqual(normalizeStashFile(legacy)?.pendingAssetCleanup, []);
-	assert.deepEqual(
-		normalizeStashFile({ ...legacy, pendingAssetCleanup: ["entry-1", "entry-1"] })
-			?.pendingAssetCleanup,
-		["entry-1"],
+test("normalizeStashFile requires explicit cleanup ownership", () => {
+	const missingCleanup: Record<string, unknown> = { ...createEmptyStashFile("--cwd", 1) };
+	delete missingCleanup.pendingAssetCleanup;
+	assert.equal(normalizeStashFile(missingCleanup), undefined);
+});
+
+test("normalizeStashFile rejects duplicate entry ids", () => {
+	const file = createEmptyStashFile("--cwd", 1);
+	assert.equal(normalizeStashFile({ ...file, entries: [VALID_ENTRY, VALID_ENTRY] }), undefined);
+});
+
+test("normalizeStashFile rejects active assets queued for cleanup", () => {
+	const file = createEmptyStashFile("--cwd", 1);
+	assert.equal(
+		normalizeStashFile({
+			...file,
+			entries: [{ ...VALID_ENTRY, assetCount: 1 }],
+			pendingAssetCleanup: [VALID_ENTRY.id],
+		}),
+		undefined,
 	);
 });
 

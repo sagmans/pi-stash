@@ -16,10 +16,14 @@ import { afterEach, beforeEach, test } from "node:test";
 import { resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
+const CURRENT_SCHEMA_VERSION = 2;
+const DEAD_PROCESS_ID = 2_147_483_647;
+const FRACTIONAL_ASSET_COUNT = 0.5;
+const FUTURE_SCHEMA_VERSION = STASH_SCHEMA_VERSION + 1;
+const LEGACY_ENTRY_ID = "legacy-entry";
+const LEGACY_SCHEMA_VERSION = 1;
 const STALE_LOCK_AGE_MS = 31_000;
 const TEST_LOCK_TOKEN = "test-lock-owner";
-const DEAD_PROCESS_ID = 2_147_483_647;
-const FUTURE_SCHEMA_VERSION = STASH_SCHEMA_VERSION + 1;
 
 let baseDir: string;
 let counter = 0;
@@ -42,19 +46,68 @@ function storeFor(cwd = "/repo") {
 	return loadStashStore(resolveStashPaths(cwd, baseDir), clock);
 }
 
+function writeLegacyStash(
+	paths: ReturnType<typeof resolveStashPaths>,
+	overrides: Record<string, unknown> = {},
+): void {
+	writeFileSync(
+		paths.stashFile,
+		JSON.stringify({
+			schemaVersion: LEGACY_SCHEMA_VERSION,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 2,
+			entries: [],
+			...overrides,
+		}),
+	);
+}
+
 test("loads empty when no stash file exists", async () => {
 	const store = await storeFor();
 	assert.equal(store.entryCount, 0);
 	assert.deepEqual([...store.entries], []);
 });
 
-test("add places newest entry at index 0 (LIFO)", async () => {
+test("add places uniquely identified entries newest-first", async () => {
 	const store = await storeFor();
-	await store.add({ text: "first" });
-	await store.add({ text: "second" });
+	const first = await store.add({ text: "first" });
+	const second = await store.add({ text: "second" });
 	assert.equal(store.entryCount, 2);
+	assert.notEqual(first.id, second.id);
 	assert.equal(store.entries[0]?.text, "second");
 	assert.equal(store.entries[1]?.text, "first");
+});
+
+test("add rejects an id already owned by an active entry", async () => {
+	const store = await storeFor();
+	await store.add({ id: "fixed-id", text: "first" });
+
+	await assert.rejects(() => store.add({ id: "fixed-id", text: "second" }), /duplicate stash id/);
+	assert.equal(store.entryCount, 1);
+});
+
+test("add rejects cleanup ownership for an active entry", async () => {
+	const store = await storeFor();
+	await store.add({ id: "active-id", text: "first" });
+
+	await assert.rejects(
+		() => store.add({ id: "new-id", text: "second", cleanupIds: ["active-id"] }),
+		/active stash id queued for cleanup/,
+	);
+	assert.equal(store.entryCount, 1);
+});
+
+test("add rejects an id still pending cleanup", async () => {
+	const store = await storeFor();
+	await store.add({ id: "pending-id", text: "first" });
+	await store.drop("pending-id");
+
+	await assert.rejects(
+		() => store.add({ id: "pending-id", text: "second" }),
+		/stash id pending asset cleanup/,
+	);
+	assert.equal(store.entryCount, 0);
 });
 
 test("add honors caller-supplied id and atomically queues transferred assets", async () => {
@@ -83,6 +136,16 @@ test("add drops empty message and zero assetCount", async () => {
 	const entry = await store.add({ text: "x", message: "   ", assetCount: 0 });
 	assert.equal(entry.message, undefined);
 	assert.equal(entry.assetCount, undefined);
+});
+
+test("add rejects unsafe asset counts", async () => {
+	const store = await storeFor();
+	await assert.rejects(() => store.add({ text: "x", assetCount: -1 }), /invalid asset count/);
+	await assert.rejects(
+		() => store.add({ text: "x", assetCount: FRACTIONAL_ASSET_COUNT }),
+		/invalid asset count/,
+	);
+	assert.equal(store.entryCount, 0);
 });
 
 test("pop defaults to newest and removes it", async () => {
@@ -163,6 +226,103 @@ test("writes persist across store instances", async () => {
 	const reopened = await loadStashStore(paths, clock);
 	assert.equal(reopened.entryCount, 1);
 	assert.equal(reopened.entries[0]?.text, "persisted");
+});
+
+test("migrates populated schema v1 state without losing owned assets", async () => {
+	const paths = resolveStashPaths("/legacy-populated", baseDir);
+	mkdirSync(paths.assetDir(LEGACY_ENTRY_ID), { recursive: true });
+	const assetPath = path.join(paths.assetDir(LEGACY_ENTRY_ID), "00-image.png");
+	writeFileSync(assetPath, "synthetic-image");
+	writeLegacyStash(paths, {
+		entries: [
+			{
+				id: LEGACY_ENTRY_ID,
+				text: `draft ${assetPath}`,
+				createdAt: 1,
+				message: "legacy note",
+				assetCount: 1,
+			},
+		],
+		pendingAssetCleanup: [LEGACY_ENTRY_ID, "stale-assets", "stale-assets"],
+	});
+
+	const store = await loadStashStore(paths, clock);
+	const migrated = JSON.parse(readFileSync(paths.stashFile, "utf8"));
+
+	assert.equal(STASH_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION);
+	assert.equal(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
+	assert.equal(store.entries[0]?.id, LEGACY_ENTRY_ID);
+	assert.equal(store.entries[0]?.message, "legacy note");
+	assert.equal(store.entries[0]?.assetCount, 1);
+	assert.deepEqual(store.pendingAssetCleanupIds, ["stale-assets"]);
+	assert.equal(readFileSync(assetPath, "utf8"), "synthetic-image");
+});
+
+test("migrates empty schema v1 state with missing cleanup metadata", async () => {
+	const paths = resolveStashPaths("/legacy-empty", baseDir);
+	writeLegacyStash(paths);
+
+	const store = await loadStashStore(paths, clock);
+	const migrated = JSON.parse(readFileSync(paths.stashFile, "utf8"));
+
+	assert.equal(store.entryCount, 0);
+	assert.deepEqual(store.pendingAssetCleanupIds, []);
+	assert.equal(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
+	assert.deepEqual(migrated.pendingAssetCleanup, []);
+});
+
+test("retries schema v1 migration after an interrupted write", async () => {
+	const paths = resolveStashPaths("/legacy-interrupted", baseDir);
+	writeLegacyStash(paths, {
+		entries: [{ id: LEGACY_ENTRY_ID, text: "preserved", createdAt: 1 }],
+	});
+
+	await assert.rejects(
+		() =>
+			loadStashStore(paths, clock, async () => {
+				throw new Error("migration interrupted");
+			}),
+		/migration interrupted/,
+	);
+	assert.equal(
+		JSON.parse(readFileSync(paths.stashFile, "utf8")).schemaVersion,
+		LEGACY_SCHEMA_VERSION,
+	);
+
+	const recovered = await loadStashStore(paths, clock);
+	assert.equal(recovered.entries[0]?.text, "preserved");
+	assert.equal(
+		JSON.parse(readFileSync(paths.stashFile, "utf8")).schemaVersion,
+		CURRENT_SCHEMA_VERSION,
+	);
+});
+
+test("schema v1 migration is idempotent after commit", async () => {
+	const paths = resolveStashPaths("/legacy-idempotent", baseDir);
+	writeLegacyStash(paths, {
+		entries: [{ id: LEGACY_ENTRY_ID, text: "preserved", createdAt: 1 }],
+	});
+
+	await loadStashStore(paths, clock);
+	const firstMigration = readFileSync(paths.stashFile, "utf8");
+	await loadStashStore(paths, clock);
+
+	assert.equal(readFileSync(paths.stashFile, "utf8"), firstMigration);
+});
+
+test("rejects schema v1 state with duplicate entry identifiers", async () => {
+	const paths = resolveStashPaths("/legacy-duplicates", baseDir);
+	writeLegacyStash(paths, {
+		entries: [
+			{ id: LEGACY_ENTRY_ID, text: "first", createdAt: 1 },
+			{ id: LEGACY_ENTRY_ID, text: "second", createdAt: 2 },
+		],
+	});
+
+	const store = await loadStashStore(paths, clock);
+
+	assert.equal(store.entryCount, 0);
+	assert.ok(readdirSync(baseDir).some((name) => name.includes(".corrupt-")));
 });
 
 test("stash file for another cwd key is quarantined", async () => {
