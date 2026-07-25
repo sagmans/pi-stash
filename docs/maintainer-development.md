@@ -16,7 +16,8 @@ npm run test
 npm run verify       # deterministic offline checks
 npm run audit        # network-dependent high-severity dependency gate
 npm run verify:ci    # complete maintainer and CI gate
-npm run smoke:herdr  # disposable real-TUI smoke; Herdr maintainers only
+npm run smoke:herdr  # packaged two-launch real-TUI smoke; Herdr maintainers only
+npm run smoke:herdr -- /path/to/package.tgz  # smoke an exact CI artifact
 npm pack --dry-run   # inspect exact public package contents
 ```
 
@@ -26,7 +27,9 @@ deterministic offline subset. A tagged release builds one npm artifact, verifies
 that exact artifact in all four legs, and publishes it only after the aggregate
 matrix succeeds. Failed, cancelled, skipped, or timed-out legs block publication;
 inspect the package job and every expanded matrix leg before rerunning the
-workflow. The Herdr smoke remains outside CI; see
+workflow. The Herdr smoke remains outside hosted CI; download its
+`npm-package` artifact and pass the `.tgz` to the smoke on a Herdr maintainer
+host for exact-artifact evidence. See
 [`docs/maintainer-smoke.md`](https://github.com/sagmans/pi-stash/blob/main/docs/maintainer-smoke.md).
 
 The audit currently reports moderate `GHSA-j3f2-48v5-ccww` in the dev-only

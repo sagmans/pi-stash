@@ -1,13 +1,13 @@
 # Maintainer smoke test
 
-Use this maintainer-only Herdr smoke after runtime-loading or storage changes.
-It launches the checkout as a real Pi TUI package without reading or mutating
-the user's configured Pi agent directory.
+Use this maintainer-only Herdr smoke after runtime-loading, command-adapter, or
+storage changes. It runs the packaged extension through two real Pi TUI
+launches without reading or mutating the user's configured Pi agent directory.
 
 ## Preconditions
 
 - Run inside a Herdr-managed pane with `HERDR_ENV=1`.
-- Install `herdr`, `pi`, Node.js, and the locked project dependencies.
+- Install `herdr`, `pi`, Node.js, npm, `tar`, and the locked project dependencies.
 - The command surface is tested with Herdr `0.7.4`; the script reports the
   installed version and checks required commands before creating anything.
 
@@ -18,34 +18,47 @@ npm ci --ignore-scripts
 npm run smoke:herdr
 ```
 
-The smoke is intentionally outside `npm run verify:ci`; Herdr is maintainer
-infrastructure, not a package-user or CI dependency.
+With an exact package artifact downloaded from CI or built separately:
+
+```bash
+npm run smoke:herdr -- /absolute/path/to/sagmans-pi-stash-X.Y.Z.tgz
+```
+
+Without an argument, the script runs `npm pack` and tests that artifact. The
+smoke remains outside `npm run verify:ci`; Herdr is maintainer infrastructure,
+not a package-user dependency. To reproduce a release run, download its
+`npm-package` artifact, then pass the single `.tgz` to the second command.
 
 ## Isolation and evidence
 
 The script:
 
-1. Creates disposable `HOME` and `PI_CODING_AGENT_DIR` trees.
-2. Seeds one synthetic stash entry for the checkout's exact working directory.
-3. Opens a non-focused sibling pane and launches
-   `pi --approve --no-session -e .` with one-run project trust, update checks,
-   and telemetry disabled.
-4. Invokes `/stash-pop` without sending a model prompt and waits for the
-   synthetic draft to appear in the editor.
-5. Verifies the persisted stash is now empty, keeps raw pane output only in
-   memory, and prints no draft or private path.
-6. Requests a clean Pi exit, closes only the pane it created, and removes all
-   disposable state on success or failure.
+1. Creates disposable `HOME` and `PI_CODING_AGENT_DIR` trees plus synthetic text
+   and a minimal clipboard-image fixture under the operating-system temp root.
+2. Extracts the supplied package, or packs the checkout, and loads only its
+   public extension entry point alongside a maintainer smoke driver.
+3. Opens a non-focused pane and launches Pi with one-run project trust, update
+   checks, and telemetry disabled. The driver verifies `/stash` and
+   `/stash-pop` came from the packaged entry point, then invokes the real stash
+   binding with the synthetic editor draft.
+4. Verifies the editor cleared and durable state owns one copied image, exits
+   the first Pi process, and closes its pane.
+5. Starts a fresh pane and Pi process, invokes `/stash-pop`, verifies the full
+   draft reappears, and confirms the stash entry is gone.
+6. Fails on timeouts, warnings, extension errors, live created panes, malformed
+   state, or residual disposable data. Raw pane output remains in memory and
+   only one concise pass/fail line is printed.
 
-Never persist or share raw TUI capture: the editor contains the synthetic canary
-and Pi may render repository and disposable paths unrelated to pi-stash.
+Never persist or share raw TUI capture: it can contain the synthetic canary,
+repository path, and disposable paths.
 
 ## Common failures
 
-- `HERDR_ENV=1 is required`: run the smoke from a Herdr-managed pane.
+- `HERDR_ENV=1 is required`: run from a Herdr-managed pane.
 - Missing Herdr command: install a compatible Herdr version and compare its
   reported command surface with tested version `0.7.4`.
-- `pi is not available`: install a supported Pi version or add it to `PATH`.
-- Pi readiness timeout: confirm the local TUI can launch with disposable state.
-- Draft restore or storage mismatch: treat runtime behavior as failed; do not
-  share captured pane output.
+- `pi is not available`: install the supported Pi version or add it to `PATH`.
+- Pi readiness/action timeout: inspect locally; never share raw pane capture.
+- Packaged command provenance failure: ensure the `.tgz` is the intended CI
+  artifact and no duplicate extension is explicitly loaded.
+- Draft, image, or storage mismatch: treat runtime behavior as failed.

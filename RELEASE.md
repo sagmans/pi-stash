@@ -15,25 +15,17 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
 2. Full CI matrix green on the exact merged SHA: Ubuntu + macOS ×
    Node 22.19.0 + 24, audit gate included.
 3. `npm run verify:ci` green locally for the maintainer.
-4. Install smoke in a disposable pi home against the exact SHA:
+4. Packaged two-launch smoke in a Herdr-managed pane against the exact candidate:
 
    ```bash
-   smoke_root=$(mktemp -d)
-   trap 'rm -rf -- "$smoke_root"' EXIT
-   (
-     export HOME="$smoke_root/home"
-     export PI_CODING_AGENT_DIR="$smoke_root/agent"
-     mkdir -p -- "$HOME" "$PI_CODING_AGENT_DIR"
-     pi install git:github.com/sagmans/pi-stash@<sha>
-     pi --approve --no-session
-   )
-   rm -rf -- "$smoke_root"
-   trap - EXIT
+   npm run smoke:herdr
    ```
 
-   Keep every exercise inside that subshell. Exercise: stash a synthetic multiline draft, restart persistence,
-   `/stash-list`, `/stash-pop`, `/stash-drop`, `/stash-clear`, optional
-   `prefix+s` and `prefix+Shift+S` integration, and temporary-image restore.
+   The smoke packs the checkout, loads only that public package entry point,
+   stashes synthetic multiline text and image data in disposable Pi state,
+   exits, starts a fresh Pi process, restores through `/stash-pop`, and proves
+   removal and cleanup. For a separately built candidate, pass its single
+   `.tgz` after `--`; see [`docs/maintainer-smoke.md`](docs/maintainer-smoke.md).
 5. README accuracy pass: every documented command/path still behaves as written.
 6. Package-content pass: `npm pack --dry-run` contains only the runtime files
    declared by `package.json` plus npm's mandatory package metadata and standard
