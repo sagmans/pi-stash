@@ -134,6 +134,8 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private mode: "list" | "detail" = "list";
 	private currentDetail: IndexedEntry | undefined;
 	private dropInProgress = false;
+	private cancelled = false;
+	private pendingDrop: Promise<void> = Promise.resolve();
 
 	private readonly searchInput: Input;
 	private readonly headerText: Text;
@@ -186,7 +188,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (this.dropInProgress) return;
+		if (this.cancelled || this.dropInProgress) return;
 		if (this.mode === "list") this.handleListInput(data);
 		else this.handleDetailInput(data);
 		this.tui.requestRender();
@@ -218,7 +220,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		if (this.matches(data, "tui.select.confirm")) {
 			this.callbacks.onRestore(current.entry);
 		} else if (data === "d" && !this.dropInProgress) {
-			void this.dropCurrent(current);
+			this.pendingDrop = this.dropCurrent(current);
 		} else if (this.matches(data, "tui.select.cancel") || matchesKey(data, "left")) {
 			this.backToList();
 		}
@@ -252,14 +254,24 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private async dropCurrent(current: IndexedEntry): Promise<void> {
 		this.dropInProgress = true;
 		try {
-			if (await this.callbacks.onDrop(current.entry)) {
+			if ((await this.callbacks.onDrop(current.entry)) && !this.cancelled) {
 				this.removeEntry(current.index);
 				this.backToList();
 			}
 		} finally {
 			this.dropInProgress = false;
-			this.tui.requestRender();
+			if (!this.cancelled) this.tui.requestRender();
 		}
+	}
+
+	cancel(): void {
+		if (this.cancelled) return;
+		this.cancelled = true;
+		this.callbacks.onClose();
+	}
+
+	async settle(): Promise<void> {
+		await this.pendingDrop;
 	}
 
 	private removeEntry(index: number): void {

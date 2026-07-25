@@ -160,6 +160,27 @@ test("detail: failed drop keeps the entry visible", async () => {
 	assert.ok(overlay.render(60).some((line) => line.includes("alpha")));
 });
 
+test("cancel closes once and suppresses callbacks after pending drop settles", async () => {
+	let finishDrop: ((value: boolean) => void) | undefined;
+	const pendingDrop = new Promise<boolean>((resolve) => {
+		finishDrop = resolve;
+	});
+	const { overlay, calls, renders } = harness([entry("a", "alpha")], pendingDrop);
+	overlay.handleInput(" ");
+	overlay.handleInput("d");
+	const rendersBeforeCancel = renders.length;
+
+	overlay.cancel();
+	overlay.cancel();
+	overlay.handleInput("E");
+	finishDrop?.(true);
+	await overlay.settle();
+
+	assert.equal(calls.close, 1);
+	assert.equal(calls.restore.length, 0);
+	assert.equal(renders.length, rendersBeforeCancel);
+});
+
 test("detail: ignores every action while drop is pending", async () => {
 	let finishDrop: ((value: boolean) => void) | undefined;
 	const pendingDrop = new Promise<boolean>((resolve) => {

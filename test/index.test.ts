@@ -24,6 +24,7 @@ import {
 	drainAssetCleanup,
 	installPiStash,
 	isSupportedSession,
+	openOverlay,
 	refreshWidget,
 	type StashUi,
 } from "../index.ts";
@@ -34,6 +35,8 @@ import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const DEAD_PROCESS_ID = 2_147_483_647;
+const UI_OPEN_WAIT_ATTEMPTS = 100;
+const UI_OPEN_WAIT_MS = 10;
 
 const directTempImages: string[] = [];
 
@@ -560,6 +563,55 @@ test("asset cleanup retries after removal succeeds but acknowledgement fails", a
 	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
 });
 
+test("openOverlay resolves when shutdown aborts an open custom UI", async () => {
+	const paths = resolveStashPaths("/cancel-overlay", baseDir);
+	const store = await loadStashStore(paths);
+	await store.add({ text: "stashed" });
+	const ui = fakeUi();
+	let opened = false;
+	ui.custom = (factory) =>
+		new Promise((resolve) => {
+			opened = true;
+			factory({ requestRender: () => {} }, undefined, undefined, resolve);
+		});
+	const controller = new AbortController();
+
+	const opening = openOverlay(
+		{ cwd: "/cancel-overlay", mode: "tui", hasUI: true, ui },
+		store,
+		paths,
+		controller.signal,
+	);
+	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !opened; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
+	}
+	assert.equal(opened, true);
+	controller.abort();
+	await opening;
+
+	assert.equal(store.entryCount, 1);
+});
+
+test("doClear cancellation leaves every draft untouched", async () => {
+	const paths = resolveStashPaths("/cancel-clear", baseDir);
+	const store = await loadStashStore(paths);
+	await store.add({ text: "preserved" });
+	const ui = fakeUi();
+	ui.confirm = async (_title, _message, options?: { signal?: AbortSignal }) => {
+		await new Promise<void>((resolve) => {
+			options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+		});
+		return false;
+	};
+	const controller = new AbortController();
+
+	const clearing = doClear(ui, store, paths, undefined, controller.signal);
+	controller.abort();
+	await clearing;
+
+	assert.equal(store.entryCount, 1);
+});
+
 test("doClear respects a confirmed dialog and wipes everything", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -669,7 +721,7 @@ test("refreshWidget populates with entries and clears when empty", async () => {
 	assert.ok(ui.widgets.has("pi-stash"));
 });
 
-test("prefix operations serialize and session shutdown waits for them", async () => {
+test("session shutdown cancels prefix operations that have not started", async () => {
 	const { pi, handlers, events } = extensionHarness();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = baseDir;
@@ -686,7 +738,7 @@ test("prefix operations serialize and session shutdown waits for them", async ()
 
 		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
 		const store = await loadStashStore(paths);
-		assert.equal(store.entryCount, 1);
+		assert.equal(store.entryCount, 0);
 		assert.equal(ui.widgets.has("pi-stash"), false);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
