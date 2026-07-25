@@ -84,6 +84,11 @@ export type StashWriteOutcome = {
 
 export type StashWriter = (filePath: string, file: StashFile) => Promise<void | StashWriteOutcome>;
 
+export type RestoredAssetCleanup = {
+	queued: string[];
+	retained: string[];
+};
+
 export class CommittedMutationError<Result> extends Error {
 	readonly committed = true;
 
@@ -122,6 +127,10 @@ export class StashStore {
 		return this.file.entries.length;
 	}
 
+	get restoredAssetLeaseIds(): readonly string[] {
+		return this.file.restoredAssetLeases;
+	}
+
 	get pendingAssetCleanupIds(): readonly string[] {
 		return this.file.pendingAssetCleanup;
 	}
@@ -156,10 +165,14 @@ export class StashStore {
 			if (input.assetCount !== undefined && input.assetCount > 0) {
 				entry.assetCount = input.assetCount;
 			}
+			const transferredIds = new Set([id, ...cleanupIds]);
 			const nextFile = {
 				...this.file,
 				updatedAt: entry.createdAt,
 				entries: [entry, ...this.file.entries],
+				restoredAssetLeases: this.file.restoredAssetLeases.filter(
+					(leaseId) => !transferredIds.has(leaseId),
+				),
 				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, cleanupIds),
 			};
 			return this.persistMutation(nextFile, entry);
@@ -170,11 +183,30 @@ export class StashStore {
 		selector: string | undefined,
 		beforeRemove?: (resolved: ResolvedEntry) => boolean | Promise<boolean>,
 	): Promise<ResolvedEntry | undefined> {
-		return this.remove(selector, false, beforeRemove);
+		return this.remove(selector, "lease", beforeRemove);
 	}
 
 	async drop(selector: string | undefined): Promise<ResolvedEntry | undefined> {
-		return this.remove(selector, true);
+		return this.remove(selector, "cleanup");
+	}
+
+	async queueRestoredAssetCleanup(retainIds: readonly string[]): Promise<RestoredAssetCleanup> {
+		for (const id of retainIds) assertSafeEntryId(id);
+		return withStashMutationLock(this.stashFile, async () => {
+			await this.reloadFresh();
+			this.assertWritable();
+			const retainedSet = new Set(retainIds);
+			const retained = this.file.restoredAssetLeases.filter((id) => retainedSet.has(id));
+			const queued = this.file.restoredAssetLeases.filter((id) => !retainedSet.has(id));
+			if (queued.length === 0) return { queued, retained };
+			const nextFile = {
+				...this.file,
+				updatedAt: this.now(),
+				restoredAssetLeases: retained,
+				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, queued),
+			};
+			return this.persistMutation(nextFile, { queued, retained });
+		});
 	}
 
 	async completeAssetCleanup(id: string): Promise<void> {
@@ -200,7 +232,10 @@ export class StashStore {
 			const nextFile = {
 				...createEmptyStashFile(this.paths.sanitized, this.now()),
 				updatedAt: this.now(),
-				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, removedIds),
+				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, [
+					...removedIds,
+					...this.file.restoredAssetLeases,
+				]),
 			};
 			return this.persistMutation(nextFile, removedIds);
 		});
@@ -208,7 +243,7 @@ export class StashStore {
 
 	private async remove(
 		selector: string | undefined,
-		queueAssetCleanup: boolean,
+		assetDisposition: "cleanup" | "lease",
 		beforeRemove?: (resolved: ResolvedEntry) => boolean | Promise<boolean>,
 	): Promise<ResolvedEntry | undefined> {
 		return withStashMutationLock(this.stashFile, async () => {
@@ -216,13 +251,19 @@ export class StashStore {
 			this.assertWritable();
 			const resolved = resolveBySelector(this.file.entries, selector);
 			if (!resolved || (beforeRemove && !(await beforeRemove(resolved)))) return undefined;
+			const ownsAssets = (resolved.entry.assetCount ?? 0) > 0;
 			const nextFile = {
 				...this.file,
 				updatedAt: this.now(),
 				entries: this.file.entries.filter((_, index) => index !== resolved.index),
-				pendingAssetCleanup: queueAssetCleanup
-					? mergeCleanupIds(this.file.pendingAssetCleanup, [resolved.entry.id])
-					: this.file.pendingAssetCleanup,
+				restoredAssetLeases:
+					assetDisposition === "lease" && ownsAssets
+						? mergeCleanupIds(this.file.restoredAssetLeases, [resolved.entry.id])
+						: this.file.restoredAssetLeases,
+				pendingAssetCleanup:
+					assetDisposition === "cleanup"
+						? mergeCleanupIds(this.file.pendingAssetCleanup, [resolved.entry.id])
+						: this.file.pendingAssetCleanup,
 			};
 			return this.persistMutation(nextFile, resolved);
 		});

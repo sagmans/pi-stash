@@ -46,6 +46,7 @@ function stashFile(entries: StashEntry[] = [], pendingAssetCleanup: string[] = [
 		createdAt: CREATED_AT,
 		updatedAt: CREATED_AT,
 		entries,
+		restoredAssetLeases: [],
 		pendingAssetCleanup,
 	};
 }

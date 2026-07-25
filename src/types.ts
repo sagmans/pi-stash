@@ -38,6 +38,8 @@ export type StashFile = {
 	createdAt: number;
 	updatedAt: number;
 	entries: StashEntry[];
+	/** Asset directory ids still referenced by text restored into an editor. */
+	restoredAssetLeases: string[];
 	/** Asset directory ids awaiting durable best-effort removal. */
 	pendingAssetCleanup: string[];
 };
@@ -55,6 +57,7 @@ export function createEmptyStashFile(cwd: string, now: number): StashFile {
 		createdAt: now,
 		updatedAt: now,
 		entries: [],
+		restoredAssetLeases: [],
 		pendingAssetCleanup: [],
 	};
 }
@@ -88,7 +91,10 @@ export function normalizeEntry(raw: unknown): StashEntry | undefined {
 	return entry;
 }
 
-type StashFileBody = Omit<StashFile, "schemaVersion" | "pendingAssetCleanup">;
+type StashFileBody = Omit<
+	StashFile,
+	"schemaVersion" | "restoredAssetLeases" | "pendingAssetCleanup"
+>;
 
 export type ParsedStashFile = {
 	file: StashFile;
@@ -100,9 +106,17 @@ export function normalizeStashFile(raw: unknown): StashFile | undefined {
 	const body = normalizeStashFileBody(raw);
 	if (!body || raw.pendingAssetCleanup === undefined) return undefined;
 	const activeIds = new Set(body.entries.map((entry) => entry.id));
-	const pendingAssetCleanup = normalizeCleanupIds(raw.pendingAssetCleanup, activeIds, false);
+	const restoredAssetLeases = normalizeOwnedIds(raw.restoredAssetLeases ?? [], activeIds, false);
+	if (!restoredAssetLeases) return undefined;
+	const unavailableIds = new Set([...activeIds, ...restoredAssetLeases]);
+	const pendingAssetCleanup = normalizeOwnedIds(raw.pendingAssetCleanup, unavailableIds, false);
 	if (!pendingAssetCleanup) return undefined;
-	return { schemaVersion: STASH_SCHEMA_VERSION, ...body, pendingAssetCleanup };
+	return {
+		schemaVersion: STASH_SCHEMA_VERSION,
+		...body,
+		restoredAssetLeases,
+		pendingAssetCleanup,
+	};
 }
 
 export function parseStashFile(raw: unknown): ParsedStashFile | undefined {
@@ -112,10 +126,15 @@ export function parseStashFile(raw: unknown): ParsedStashFile | undefined {
 	const body = normalizeStashFileBody(raw);
 	if (!body) return undefined;
 	const activeIds = new Set(body.entries.map((entry) => entry.id));
-	const pendingAssetCleanup = normalizeCleanupIds(raw.pendingAssetCleanup ?? [], activeIds, true);
+	const pendingAssetCleanup = normalizeOwnedIds(raw.pendingAssetCleanup ?? [], activeIds, true);
 	if (!pendingAssetCleanup) return undefined;
 	return {
-		file: { schemaVersion: STASH_SCHEMA_VERSION, ...body, pendingAssetCleanup },
+		file: {
+			schemaVersion: STASH_SCHEMA_VERSION,
+			...body,
+			restoredAssetLeases: [],
+			pendingAssetCleanup,
+		},
 		migratedFrom: LEGACY_STASH_SCHEMA_VERSION,
 	};
 }
@@ -140,7 +159,7 @@ function normalizeStashFileBody(raw: Record<string, unknown>): StashFileBody | u
 	};
 }
 
-function normalizeCleanupIds(
+function normalizeOwnedIds(
 	raw: unknown,
 	activeIds: ReadonlySet<string>,
 	discardActiveIds: boolean,

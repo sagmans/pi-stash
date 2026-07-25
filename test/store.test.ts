@@ -345,6 +345,17 @@ test("add preserves mutation and unlock errors when both fail", async () => {
 	assert.equal(existsSync(paths.stashFile), false);
 });
 
+test("pop durably leases restored image assets across restarts", async () => {
+	const paths = resolveStashPaths("/restored-lease", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const entry = await store.add({ text: "image", assetCount: 1 });
+
+	await store.pop(entry.id);
+
+	assert.deepEqual(store.restoredAssetLeaseIds, [entry.id]);
+	assert.deepEqual((await loadStashStore(paths, clock)).restoredAssetLeaseIds, [entry.id]);
+});
+
 test("pop defaults to newest and removes it", async () => {
 	const store = await storeFor();
 	await store.add({ text: "first" });
@@ -380,6 +391,34 @@ test("drop removes the entry and durably queues its asset cleanup", async () => 
 	assert.equal(store.entryCount, 0);
 	assert.deepEqual(store.pendingAssetCleanupIds, [entry.id]);
 	assert.deepEqual((await loadStashStore(paths, clock)).pendingAssetCleanupIds, [entry.id]);
+});
+
+test("queueRestoredAssetCleanup retains active leases and queues abandoned leases", async () => {
+	const store = await storeFor("/lease-cleanup");
+	const retained = await store.add({ text: "retained", assetCount: 1 });
+	const abandoned = await store.add({ text: "abandoned", assetCount: 1 });
+	await store.pop(retained.id);
+	await store.pop(abandoned.id);
+
+	const result = await store.queueRestoredAssetCleanup([retained.id]);
+
+	assert.deepEqual(result, { queued: [abandoned.id], retained: [retained.id] });
+	assert.deepEqual(store.restoredAssetLeaseIds, [retained.id]);
+	assert.deepEqual(store.pendingAssetCleanupIds, [abandoned.id]);
+});
+
+test("concurrent restores preserve both asset leases", async () => {
+	const paths = resolveStashPaths("/concurrent-restores", baseDir);
+	const seed = await loadStashStore(paths, clock);
+	const first = await seed.add({ text: "first", assetCount: 1 });
+	const second = await seed.add({ text: "second", assetCount: 1 });
+	const left = await loadStashStore(paths, clock);
+	const right = await loadStashStore(paths, clock);
+
+	await Promise.all([left.pop(first.id), right.pop(second.id)]);
+
+	const reopened = await loadStashStore(paths, clock);
+	assert.deepEqual(new Set(reopened.restoredAssetLeaseIds), new Set([first.id, second.id]));
 });
 
 test("completeAssetCleanup acknowledges only the completed id", async () => {

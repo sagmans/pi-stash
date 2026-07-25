@@ -30,7 +30,12 @@ import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
 import { defaultStashBaseDir, resolveStashPaths } from "./paths.ts";
 import { type Claim, startStashBinding } from "./prefix.ts";
-import { CommittedMutationError, loadStashStore, type StashStore } from "./store.ts";
+import {
+	CommittedMutationError,
+	loadStashStore,
+	type RestoredAssetCleanup,
+	type StashStore,
+} from "./store.ts";
 import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
 import { themedWidgetLines } from "./widget.ts";
 
@@ -108,28 +113,61 @@ async function completeIntentOrAggregate(
 	}
 }
 
+export type AssetCleanupReport = {
+	deleted: string[];
+	failed: string[];
+};
+
 export async function drainAssetCleanup(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
 	remove: AssetDirRemover = removeAssetDir,
 	failureMessage = ASSET_CLEANUP_FAILED_MESSAGE,
-): Promise<void> {
-	let failed = false;
+): Promise<AssetCleanupReport> {
+	const report: AssetCleanupReport = { deleted: [], failed: [] };
 	let lockReleaseFailed = false;
 	for (const id of [...store.pendingAssetCleanupIds]) {
 		try {
 			await remove(paths.assetDir(id));
+			report.deleted.push(id);
 			await store.completeAssetCleanup(id);
 		} catch (error) {
 			if (committedMutation(error)) lockReleaseFailed = true;
-			else failed = true;
+			else report.failed.push(id);
 		}
 	}
-	if (failed) ui.notify(failureMessage, "error");
+	if (report.failed.length > 0) ui.notify(failureMessage, "error");
 	if (lockReleaseFailed) {
 		ui.notify(`Asset cleanup committed, but ${LOCK_RELEASE_FAILED_MESSAGE}`, "error");
 	}
+	return report;
+}
+
+export async function doAssetCleanup(
+	ui: StashUi,
+	store: StashStore,
+	paths: ReturnType<typeof resolveStashPaths>,
+	remove: AssetDirRemover = removeAssetDir,
+): Promise<void> {
+	await store.refresh();
+	const editorText = ui.getEditorText();
+	const activeIds = store.restoredAssetLeaseIds.filter((id) =>
+		editorText.includes(`${paths.assetDir(id)}${path.sep}`),
+	);
+	let lifecycle: RestoredAssetCleanup;
+	try {
+		lifecycle = await store.queueRestoredAssetCleanup(activeIds);
+	} catch (error) {
+		const committed = committedMutation<RestoredAssetCleanup>(error);
+		if (!committed) throw error;
+		lifecycle = committed.result;
+	}
+	const report = await drainAssetCleanup(ui, store, paths, remove);
+	ui.notify(
+		`Asset cleanup: deleted ${report.deleted.length}, retained ${lifecycle.retained.length}, failed ${report.failed.length}`,
+		report.failed.length > 0 ? "error" : "info",
+	);
 }
 
 export async function doStash(
@@ -508,6 +546,16 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 			if (!session) return;
 			await enqueueOperation(session, () =>
 				doDrop(session.ui, session.store, session.paths, parseArg(args)),
+			);
+		},
+	});
+	pi.registerCommand("stash-cleanup", {
+		description: "Remove restored image assets no longer referenced by the editor",
+		handler: async (_args, ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueueOperation(session, () =>
+				doAssetCleanup(session.ui, session.store, session.paths),
 			);
 		},
 	});

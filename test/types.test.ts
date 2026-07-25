@@ -63,6 +63,26 @@ test("normalizeStashFile rejects duplicate entry ids", () => {
 	assert.equal(normalizeStashFile({ ...file, entries: [VALID_ENTRY, VALID_ENTRY] }), undefined);
 });
 
+test("normalizeStashFile rejects overlapping active, leased, and cleanup ownership", () => {
+	const file = createEmptyStashFile("--cwd", 1);
+	assert.equal(
+		normalizeStashFile({
+			...file,
+			entries: [{ ...VALID_ENTRY, assetCount: 1 }],
+			restoredAssetLeases: [VALID_ENTRY.id],
+		}),
+		undefined,
+	);
+	assert.equal(
+		normalizeStashFile({
+			...file,
+			restoredAssetLeases: ["restored"],
+			pendingAssetCleanup: ["restored"],
+		}),
+		undefined,
+	);
+});
+
 test("normalizeStashFile rejects active assets queued for cleanup", () => {
 	const file = createEmptyStashFile("--cwd", 1);
 	assert.equal(
@@ -82,6 +102,7 @@ test("normalizeStashFile round-trips a valid file", () => {
 		createdAt: 1,
 		updatedAt: 2,
 		entries: [VALID_ENTRY],
+		restoredAssetLeases: ["restored-entry"],
 		pendingAssetCleanup: ["old-entry"],
 	};
 	assert.deepEqual(normalizeStashFile(file), file);

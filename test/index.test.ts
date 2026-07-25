@@ -16,6 +16,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
+	doAssetCleanup,
 	doClear,
 	doDrop,
 	doPop,
@@ -291,6 +292,7 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	const originalAssetDir = paths.assetDir(original.id);
 
 	await doPop(ui, store, paths);
+	assert.deepEqual(store.restoredAssetLeaseIds, [original.id]);
 	let queuedAtRemoval: readonly string[] = [];
 	await doStash(ui, store, paths, undefined, async (assetDir) => {
 		queuedAtRemoval = [...store.pendingAssetCleanupIds];
@@ -300,6 +302,7 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	assert.ok(transferred);
 
 	assert.deepEqual(queuedAtRemoval, [original.id]);
+	assert.deepEqual(store.restoredAssetLeaseIds, []);
 	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(originalAssetDir), false);
 	assert.equal(existsSync(paths.assetDir(transferred.id)), true);
@@ -435,6 +438,51 @@ test("doPop warns when selector matches nothing", async () => {
 	await doPop(ui, store, paths, "999");
 
 	assert.ok(ui.notifs.some((n) => n.type === "warning"));
+});
+
+test("doAssetCleanup retains editor references and retries failed lease cleanup", async () => {
+	const paths = resolveStashPaths("/restored-cleanup", baseDir);
+	const store = await loadStashStore(paths);
+	const retained = await store.add({ text: "retained", assetCount: 1 });
+	const abandoned = await store.add({ text: "abandoned", assetCount: 1 });
+	for (const entry of [retained, abandoned]) {
+		mkdirSync(paths.assetDir(entry.id), { recursive: true });
+		writeFileSync(path.join(paths.assetDir(entry.id), "00-image.png"), "image");
+	}
+	await store.pop(retained.id);
+	await store.pop(abandoned.id);
+	const ui = fakeUi({ editorText: `${paths.assetDir(retained.id)}/00-image.png` });
+
+	await doAssetCleanup(ui, store, paths, async (assetDir) => {
+		if (assetDir === paths.assetDir(abandoned.id)) throw new Error("remove failed");
+		await removeAssetDir(assetDir);
+	});
+
+	assert.deepEqual(store.restoredAssetLeaseIds, [retained.id]);
+	assert.deepEqual(store.pendingAssetCleanupIds, [abandoned.id]);
+	assert.equal(existsSync(paths.assetDir(retained.id)), true);
+	assert.equal(existsSync(paths.assetDir(abandoned.id)), true);
+	assert.ok(
+		ui.notifs.some(({ message }) => message.includes("retained 1") && message.includes("failed 1")),
+	);
+
+	ui.editorText = "";
+	await doAssetCleanup(ui, store, paths);
+	assert.deepEqual(store.restoredAssetLeaseIds, []);
+	assert.deepEqual(store.pendingAssetCleanupIds, []);
+	assert.equal(existsSync(paths.assetDir(retained.id)), false);
+	assert.equal(existsSync(paths.assetDir(abandoned.id)), false);
+});
+
+test("doAssetCleanup is repeatable when no restored assets remain", async () => {
+	const paths = resolveStashPaths("/empty-cleanup", baseDir);
+	const store = await loadStashStore(paths);
+	const ui = fakeUi();
+
+	await doAssetCleanup(ui, store, paths);
+	await doAssetCleanup(ui, store, paths);
+
+	assert.equal(ui.notifs.at(-1)?.message, "Asset cleanup: deleted 0, retained 0, failed 0");
 });
 
 test("doDrop removes the entry and its asset dir", async () => {
