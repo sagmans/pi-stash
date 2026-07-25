@@ -19,8 +19,9 @@ import path from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 
 import { persistTmpImages, removeAssetDir } from "./assets.ts";
+import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
-import { resolveStashPaths } from "./paths.ts";
+import { defaultStashBaseDir, resolveStashPaths } from "./paths.ts";
 import { type Claim, startStashBinding } from "./prefix.ts";
 import { CommittedMutationError, loadStashStore, type StashStore } from "./store.ts";
 import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
@@ -506,14 +507,33 @@ function fireList(getter: ActiveGetter, ctx: SessionCtx): void {
 	);
 }
 
-export function installPiStash(pi: ExtensionAPI): void {
+export type PiStashInstallOptions = {
+	legacyBaseDir?: string;
+};
+
+export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
 	let active: ActiveSession | undefined;
 	const requireActiveForCommand = makeRequireActive(() => active);
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!isSupportedSession(ctx)) return;
 
-		const paths = resolveStashPaths(ctx.cwd);
+		const baseDir = defaultStashBaseDir();
+		const paths = resolveStashPaths(ctx.cwd, baseDir);
+		try {
+			const migration = await migrateLegacyStash(
+				ctx.cwd,
+				baseDir,
+				options.legacyBaseDir ?? legacyStashBaseDir(),
+			);
+			if (migration.kind !== "not-needed") {
+				ctx.ui.notify("Migrated legacy pi-stash data to the configured Pi agent directory", "info");
+			}
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : "unknown legacy migration failure";
+			ctx.ui.notify(`pi-stash unavailable: ${reason}`, "error");
+			return;
+		}
 		const store = await loadStashStore(paths);
 		await drainAssetCleanup(ctx.ui as StashUi, store, paths);
 		refreshWidget(ctx.ui as StashUi, store);

@@ -290,6 +290,14 @@ export async function loadStashStore(
 	return new StashStore(paths, loaded, now, write);
 }
 
+/** Coordinate migration with both legacy and configured-root store processes. */
+export function withStashFileLock<Result>(
+	filePath: string,
+	operation: () => Promise<Result>,
+): Promise<Result> {
+	return withStashLock(filePath, operation);
+}
+
 async function readCurrentStashFile(
 	filePath: string,
 	cwdKey: string,

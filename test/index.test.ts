@@ -604,7 +604,7 @@ test("prefix operations serialize and session shutdown waits for them", async ()
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = baseDir;
 	try {
-		installPiStash(pi);
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
 		const ui = fakeUi();
 		const ctx = { cwd: "/queued-repo", mode: "tui", hasUI: true, ui };
 		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -637,7 +637,7 @@ test("session startup retries durable asset cleanup", async () => {
 		writeFileSync(path.join(paths.assetDir(entry.id), "00-a.png"), "x");
 		await seed.drop(entry.id);
 
-		installPiStash(pi);
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
 		const ui = fakeUi();
 		const ctx = { cwd, mode: "tui", hasUI: true, ui };
 		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -645,6 +645,65 @@ test("session startup retries durable asset cleanup", async () => {
 		assert.equal(existsSync(paths.assetDir(entry.id)), false);
 		assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("session startup migrates the exact legacy worktree scope", async () => {
+	const { pi, handlers } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = path.join(baseDir, "configured-agent");
+	const legacyBaseDir = path.join(baseDir, "legacy", "pi-stash");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const cwd = "/legacy-migration";
+		const legacyPaths = resolveStashPaths(cwd, legacyBaseDir);
+		const legacy = await loadStashStore(legacyPaths);
+		await legacy.add({ text: "legacy draft" });
+
+		installPiStash(pi, { legacyBaseDir });
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		const configuredPaths = resolveStashPaths(cwd, path.join(agentDir, "pi-stash"));
+		assert.equal((await loadStashStore(configuredPaths)).entries[0]?.text, "legacy draft");
+		assert.equal(existsSync(legacyPaths.stashFile), false);
+		assert.ok(ui.notifs.some((notification) => notification.message.includes("Migrated")));
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("session startup reports a legacy migration conflict and stays inactive", async () => {
+	const { pi, handlers } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = path.join(baseDir, "configured-agent");
+	const legacyBaseDir = path.join(baseDir, "legacy", "pi-stash");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const cwd = "/legacy-conflict";
+		await (await loadStashStore(resolveStashPaths(cwd, legacyBaseDir))).add({ text: "legacy" });
+		await (await loadStashStore(resolveStashPaths(cwd, path.join(agentDir, "pi-stash")))).add({
+			text: "configured",
+		});
+
+		installPiStash(pi, { legacyBaseDir });
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		assert.ok(
+			ui.notifs.some(
+				(notification) =>
+					notification.type === "error" && notification.message.includes("destination conflicts"),
+			),
+		);
+		assert.equal(ui.widgets.has("pi-stash"), false);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
