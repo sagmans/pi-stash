@@ -21,8 +21,12 @@ npm pack --dry-run   # inspect exact public package contents
 ```
 
 `npm run verify:ci` is the authoritative maintainer gate and runs in every CI
-matrix leg. `npm run verify` is its deterministic offline subset. The Herdr
-smoke remains outside CI; see
+matrix leg: Ubuntu and macOS on Node 22.19.0 and 24. `npm run verify` is its
+deterministic offline subset. A tagged release builds one npm artifact, verifies
+that exact artifact in all four legs, and publishes it only after the aggregate
+matrix succeeds. Failed, cancelled, skipped, or timed-out legs block publication;
+inspect the package job and every expanded matrix leg before rerunning the
+workflow. The Herdr smoke remains outside CI; see
 [`docs/maintainer-smoke.md`](https://github.com/sagmans/pi-stash/blob/main/docs/maintainer-smoke.md).
 
 The audit currently reports moderate `GHSA-j3f2-48v5-ccww` in the dev-only

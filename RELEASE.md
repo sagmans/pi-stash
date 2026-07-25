@@ -66,11 +66,20 @@ git push origin vX.Y.Z
 ```
 
 Tag creation for `v*` is restricted to repository admins by a ruleset. The
-tag push triggers the `release` workflow: it re-verifies the candidate and
-then waits for the release owner's approval on the `npm-release` environment
-before publishing to npm via OIDC trusted publishing (no npm token is stored
-anywhere; provenance attestations are generated automatically). A waived gate
-cannot clear this approval without the SHA-bound waiver record from gate 8.
+tag push triggers the `release` workflow. Its `package` job creates one npm
+artifact, then Ubuntu and macOS each verify that artifact on Node 22.19.0 and
+24. The approval-gated `publish` job depends on the package job and the complete
+matrix, so a failed, cancelled, skipped, or timed-out leg blocks publication.
+It downloads and publishes the same digest-validated artifact; it never rebuilds
+from a checkout. Inspect every matrix leg and the package job when publication
+is blocked, then rerun the failed workflow only after correcting the candidate
+or transient infrastructure failure.
+
+After all jobs succeed, the workflow waits for the release owner's approval on
+the `npm-release` environment and publishes through OIDC trusted publishing (no
+npm token is stored anywhere; provenance attestations are generated
+automatically). A waived gate cannot clear this approval without the SHA-bound
+waiver record from gate 8.
 
 After publication, create the GitHub release from the tag using the drafted
 notes.
