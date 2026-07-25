@@ -325,20 +325,6 @@ export async function openOverlay(
 ): Promise<void> {
 	await refreshVisibleStore(session.ui, store);
 	if (signal?.aborted) return;
-	if (session.mode !== "tui") {
-		const entries = store.entries;
-		if (entries.length === 0) {
-			safeNotify(session.ui, "No stashed drafts", "info");
-			return;
-		}
-		safeNotify(
-			session.ui,
-			`${entries.length} stashed draft(s). Use /stash-pop <index> to restore.`,
-			"info",
-		);
-		return;
-	}
-
 	const entries = [...store.entries];
 	if (entries.length === 0) {
 		safeNotify(session.ui, "No stashed drafts", "info");

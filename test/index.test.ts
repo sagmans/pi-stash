@@ -16,7 +16,8 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-
+import install from "../index.ts";
+import { removeAssetDir } from "../src/assets.ts";
 import {
 	doAssetCleanup,
 	doClear,
@@ -29,8 +30,7 @@ import {
 	openOverlay,
 	refreshWidget,
 	type StashUi,
-} from "../index.ts";
-import { removeAssetDir } from "../src/assets.ts";
+} from "../src/index.ts";
 import { beginAddIntent, beginRestoreIntent } from "../src/intents.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
 import { resolveStashPaths } from "../src/paths.ts";
@@ -905,9 +905,11 @@ test("doClear is a no-op when the user declines", async () => {
 test("registered commands execute the documented stash workflows", async () => {
 	const { pi, handlers, commands } = extensionHarness();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
 	process.env.PI_CODING_AGENT_DIR = baseDir;
+	process.env.HOME = baseDir;
 	try {
-		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
+		install(pi);
 		assert.deepEqual([...commands.keys()], [...STASH_COMMAND_NAMES]);
 		const ui = fakeUi({ editorText: "saved through command" });
 		let listOpened = 0;
@@ -951,6 +953,8 @@ test("registered commands execute the documented stash workflows", async () => {
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
 	}
 });
 

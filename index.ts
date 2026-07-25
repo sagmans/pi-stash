@@ -1,4 +1,3 @@
-// Pi derives config labels from this root path; implementation stays isolated under src.
+// Published package surface: Pi loads this installer from the declared extension entry point.
 
-export * from "./src/index.ts";
 export { default } from "./src/index.ts";
