@@ -39,11 +39,18 @@ test("release verifies one immutable package across every supported matrix leg",
 
 test("publication cannot bypass the complete matrix or rebuild its artifact", () => {
 	const publishJob = job("publish");
+	const workflowHeader = WORKFLOW.slice(0, WORKFLOW.indexOf("jobs:\n"));
 
+	assert.match(workflowHeader, /push:\n\s+tags: \["v\*"\]/);
+	assert.match(workflowHeader, /permissions:\n\s+contents: read/);
+	assert.doesNotMatch(workflowHeader, /id-token: write/);
 	assert.match(publishJob, /needs: \[package, verify\]/);
 	assert.match(publishJob, /uses: actions\/download-artifact@[0-9a-f]{40}/);
 	assert.match(publishJob, /name: npm-package/);
+	assert.match(publishJob, /environment: npm-release/);
+	assert.match(publishJob, /permissions:\n\s+contents: read\n\s+id-token: write/);
+	assert.match(publishJob, /registry-url: "https:\/\/registry\.npmjs\.org"/);
 	assert.match(publishJob, /npm publish "\$package" --provenance --access public/);
-	assert.doesNotMatch(publishJob, /actions\/checkout/);
+	assert.doesNotMatch(publishJob, /actions\/checkout|NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./);
 	assert.doesNotMatch(publishJob, /npm pack|npm run|continue-on-error:|if:\s*\$\{\{\s*always\(\)/);
 });

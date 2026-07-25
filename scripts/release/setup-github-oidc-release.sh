@@ -1,64 +1,81 @@
 #!/usr/bin/env bash
-# One-time GitHub-side setup for npm OIDC trusted-publishing releases.
-# Reusable across repos: provisions everything gh-side so that only the
-# named reviewer can publish, with no stored secrets anywhere.
-#
-# Creates/updates:
-#   1. Environment "npm-release" — required reviewer, deploys restricted to
-#      release tags, admins cannot bypass the approval gate.
-#   2. Tag deployment policy on that environment for the tag pattern.
-#   3. Ruleset restricting create/update/delete of release tags to repo admins.
-#
-# Prerequisites: gh CLI authenticated with admin rights on the repo.
-# Usage: setup-github-oidc-release.sh <owner/repo> <reviewer-login> [tag-pattern]
+# Provision the GitHub controls required by RELEASE.md's npm OIDC boundary.
 set -euo pipefail
 
-readonly REPO="${1:?usage: setup-github-oidc-release.sh <owner/repo> <reviewer-login> [tag-pattern]}"
-readonly REVIEWER="${2:?reviewer login required}"
-readonly TAG_PATTERN="${3:-v*}"
 readonly ENV_NAME="npm-release"
 readonly RULESET_NAME="release-tags-admin-only"
-# RepositoryRole 5 = admin: only admins may create/move release tags.
-readonly ADMIN_ROLE_ID=5
+readonly ADMIN_ROLE_ID="5"
+readonly RULESET_QUERY='[.[] | select(.name == "release-tags-admin-only" and .source_type == "Repository")][0].id // empty'
+readonly USAGE="usage: setup-github-oidc-release.sh <owner/repo> <reviewer-login> [tag-pattern]"
+
+fail() {
+	printf 'release setup failed: %s\n' "$1" >&2
+	exit 1
+}
+
+[[ $# -ge 2 && $# -le 3 ]] || fail "$USAGE"
+readonly REPO="$1"
+readonly REVIEWER="$2"
+readonly TAG_PATTERN="${3:-v*}"
+
+# Strict syntax keeps every value both API-safe and narrower than an arbitrary ref glob.
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "invalid owner/repository"
+repo_owner="${REPO%%/*}"
+repo_name="${REPO#*/}"
+[[ "$repo_owner" != "." && "$repo_owner" != ".." && "$repo_name" != "." && "$repo_name" != ".." ]] ||
+	fail "invalid owner/repository"
+[[ "$REVIEWER" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ && "$REVIEWER" != *--* ]] ||
+	fail "invalid reviewer login"
+[[ ${#TAG_PATTERN} -le 64 && "$TAG_PATTERN" =~ ^v[A-Za-z0-9.*_-]*$ ]] ||
+	fail "invalid or over-broad tag pattern"
+command -v gh >/dev/null 2>&1 || fail "gh is required"
+command -v node >/dev/null 2>&1 || fail "node is required"
 
 reviewer_id="$(gh api "users/${REVIEWER}" --jq '.id')"
+[[ "$reviewer_id" =~ ^[1-9][0-9]*$ ]] || fail "GitHub returned an invalid reviewer id"
 
-# PUT is upsert: safe to re-run. can_admins_bypass=false keeps the approval
-# gate mandatory even for repo admins.
-gh api "repos/${REPO}/environments/${ENV_NAME}" -X PUT --input - >/dev/null <<EOF
-{
-  "can_admins_bypass": false,
-  "reviewers": [{"type": "User", "id": ${reviewer_id}}],
-  "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
-}
-EOF
+environment_payload="$(node -e '
+const reviewerId = Number(process.argv[1]);
+process.stdout.write(JSON.stringify({
+  can_admins_bypass: false,
+  reviewers: [{ type: "User", id: reviewerId }],
+  deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+}));
+' "$reviewer_id")"
+printf '%s' "$environment_payload" |
+	gh api "repos/${REPO}/environments/${ENV_NAME}" -X PUT --input - >/dev/null
 
-# Skip if the tag policy already exists; the API does not deduplicate.
+# API policy creation is not idempotent, so compare the literal existing names first.
 if ! gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
-	--jq ".branch_policies[].name" | grep -Fqx -- "${TAG_PATTERN}"; then
+	--jq '.branch_policies[].name' | grep -Fqx -- "$TAG_PATTERN"; then
 	gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" \
 		-X POST -f "name=${TAG_PATTERN}" -f "type=tag" >/dev/null
 fi
 
-# PUT (update) when the ruleset exists, POST (create) otherwise.
-ruleset_payload() {
-	cat <<EOF
-{
-  "name": "${RULESET_NAME}",
-  "target": "tag",
-  "enforcement": "active",
-  "conditions": {"ref_name": {"include": ["refs/tags/${TAG_PATTERN}"], "exclude": []}},
-  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
-  "bypass_actors": [{"actor_id": ${ADMIN_ROLE_ID}, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
-}
-EOF
-}
-
-ruleset_id="$(gh api "repos/${REPO}/rulesets" --jq ".[] | select(.name == \"${RULESET_NAME}\" and .source_type == \"Repository\") | .id" | head -1)"
-if [ -n "${ruleset_id}" ]; then
-	gh api "repos/${REPO}/rulesets/${ruleset_id}" -X PUT --input <(ruleset_payload) >/dev/null
+ruleset_payload="$(node -e '
+const [name, tagPattern, adminRoleId] = process.argv.slice(1);
+process.stdout.write(JSON.stringify({
+  name,
+  target: "tag",
+  enforcement: "active",
+  conditions: { ref_name: { include: [`refs/tags/${tagPattern}`], exclude: [] } },
+  rules: [{ type: "creation" }, { type: "update" }, { type: "deletion" }],
+  bypass_actors: [{
+    actor_id: Number(adminRoleId),
+    actor_type: "RepositoryRole",
+    bypass_mode: "always",
+  }],
+}));
+' "$RULESET_NAME" "$TAG_PATTERN" "$ADMIN_ROLE_ID")"
+ruleset_id="$(gh api "repos/${REPO}/rulesets" --jq "$RULESET_QUERY")"
+if [[ -n "$ruleset_id" ]]; then
+	[[ "$ruleset_id" =~ ^[1-9][0-9]*$ ]] || fail "GitHub returned an invalid ruleset id"
+	printf '%s' "$ruleset_payload" |
+		gh api "repos/${REPO}/rulesets/${ruleset_id}" -X PUT --input - >/dev/null
 else
-	gh api "repos/${REPO}/rulesets" -X POST --input <(ruleset_payload) >/dev/null
+	printf '%s' "$ruleset_payload" |
+		gh api "repos/${REPO}/rulesets" -X POST --input - >/dev/null
 fi
 
-echo "done: ${REPO} — env ${ENV_NAME} (reviewer: ${REVIEWER}), tag policy ${TAG_PATTERN}, ruleset ${RULESET_NAME}"
+printf 'done: %s — env %s, reviewer %s, tag policy %s, ruleset %s\n' \
+	"$REPO" "$ENV_NAME" "$REVIEWER" "$TAG_PATTERN" "$RULESET_NAME"

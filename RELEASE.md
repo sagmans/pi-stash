@@ -39,11 +39,39 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
    candidate SHA. With no waiver record, the tag cannot be created and
    publication cannot be approved.
 
-A gate may only be waived by the release owner. The waiver rationale is
-recorded against the exact candidate SHA before tagging (gate 8) and
-reproduced in the published GitHub release notes after publication; the
-SHA-bound waiver record — not the later GitHub release — is what authorizes
-the tag and publication approval.
+A gate may only be waived by the release owner. Each waived gate requires one
+record using the canonical format below; blanket or multi-gate waivers are
+invalid. Preserve the validated JSON verbatim in an owner-protected, durable
+approval record bound to the candidate SHA before tagging. Reproduce it in the
+published GitHub release notes after publication. The pre-tag record — not the
+later GitHub release — authorizes tagging and publication approval.
+
+```json
+{
+  "schemaVersion": 1,
+  "candidateSha": "0123456789abcdef0123456789abcdef01234567",
+  "scope": "gate-4",
+  "owner": "sagmans",
+  "reason": "Temporary infrastructure outage prevents the packaged runtime smoke.",
+  "evidence": ["https://github.com/sagmans/pi-stash/actions/runs/123"],
+  "createdAt": "2026-07-23T12:00:00.000Z",
+  "expiresAt": "2026-07-24T12:00:00.000Z"
+}
+```
+
+All eight fields are required and unknown fields fail validation. `scope` must
+name exactly one of `gate-1` through `gate-7`; the candidate SHA and owner must
+match the intended release, evidence must contain HTTPS URLs, timestamps must
+be canonical UTC, and expiry may be at most 72 hours after creation. Validate
+before creating the tag:
+
+```bash
+node scripts/release/validate-waiver.mjs \
+  /path/to/waiver.json <candidate-sha> sagmans gate-4
+```
+
+Missing, malformed, expired, mismatched, unknown, or over-broad records exit
+nonzero and cannot authorize a release.
 
 ## Tagging
 
