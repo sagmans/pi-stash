@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { defaultStashBaseDir, resolveStashPaths, sanitizeCwd } from "../src/paths.ts";
+import { defaultStashBaseDir, resolveStashPaths, sanitizeCwd, scopeLabel } from "../src/paths.ts";
 
 test("sanitizeCwd flattens absolute posix path with double dash", () => {
 	assert.equal(sanitizeCwd("/Users/me/repo"), "v2--Users--me--repo");
@@ -48,6 +48,23 @@ test("sanitizeCwd rejects a limit too short for a collision-resistant key", () =
 
 test("defaultStashBaseDir lives under Pi's configured agent directory", () => {
 	assert.equal(defaultStashBaseDir("/profiles/work"), "/profiles/work/pi-stash");
+});
+
+test("scopeLabel preserves root, home, nested, sibling, and missing-home boundaries", () => {
+	assert.equal(scopeLabel("/", "/Users/me"), "/");
+	assert.equal(scopeLabel("/Users/me", "/Users/me"), "~");
+	assert.equal(scopeLabel("/Users/me/repo", "/Users/me"), "~/repo");
+	assert.equal(scopeLabel("/Users/me/a/b/c/d", "/Users/me"), "…/b/c/d");
+	assert.equal(scopeLabel("/Users/me-too/repo", "/Users/me"), "/Users/me-too/repo");
+	assert.equal(scopeLabel("/srv/repo", "/Users/me"), "/srv/repo");
+	assert.equal(scopeLabel("/srv/repo", undefined), "/srv/repo");
+});
+
+test("scopeLabel handles Windows path boundaries without host-platform parsing", () => {
+	assert.equal(scopeLabel("C:\\", "C:\\Users\\me"), "C:\\");
+	assert.equal(scopeLabel("C:\\Users\\me", "C:\\Users\\me"), "~");
+	assert.equal(scopeLabel("C:\\Users\\me\\repo", "C:\\Users\\me"), "~\\repo");
+	assert.equal(scopeLabel("C:\\Users\\me-too\\repo", "C:\\Users\\me"), "C:\\Users\\me-too\\repo");
 });
 
 test("resolveStashPaths derives stash file and per-entry asset dir", () => {

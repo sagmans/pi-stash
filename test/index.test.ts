@@ -15,6 +15,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
 	doAssetCleanup,
@@ -53,6 +54,7 @@ const directTempImages: string[] = [];
 type FakeUiOptions = {
 	editorText?: string;
 	confirmResult?: boolean;
+	widgetWidth?: number;
 };
 
 function fakeUi(options: FakeUiOptions = {}): StashUi & {
@@ -64,6 +66,8 @@ function fakeUi(options: FakeUiOptions = {}): StashUi & {
 	const widgets = new Map<string, string[] | undefined>();
 	const notifs: Array<{ message: string; type?: string }> = [];
 	const confirmResult = options.confirmResult ?? true;
+	const widgetWidth = options.widgetWidth ?? 80;
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 	return {
 		notify: (message, type) => notifs.push({ message, type }),
 		confirm: async () => confirmResult,
@@ -72,10 +76,21 @@ function fakeUi(options: FakeUiOptions = {}): StashUi & {
 			editorText = text;
 		},
 		setWidget: (key, content) => {
-			if (content === undefined) widgets.delete(key);
-			else widgets.set(key, content);
+			if (content === undefined) {
+				widgets.delete(key);
+				return;
+			}
+			const widgetContent = content as unknown;
+			if (typeof widgetContent === "function") {
+				const component = widgetContent(undefined, theme) as {
+					render(width: number): string[];
+				};
+				widgets.set(key, component.render(widgetWidth));
+				return;
+			}
+			widgets.set(key, content as string[]);
 		},
-		theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+		theme,
 		custom: async () => undefined,
 		widgets,
 		notifs,
@@ -896,6 +911,20 @@ test("refreshWidget populates with entries and clears when empty", async () => {
 	await store.add({ text: "x" });
 	refreshWidget(ui, store);
 	assert.ok(ui.widgets.has("pi-stash"));
+});
+
+test("refreshWidget renders every row within the current terminal width", async () => {
+	const store = await loadStashStore(resolveStashPaths("/narrow-widget", baseDir));
+	await store.add({ text: `${"界".repeat(30)} 🧑🏽‍💻` });
+	const width = 12;
+	const ui = fakeUi({ widgetWidth: width });
+
+	refreshWidget(ui, store);
+
+	assert.equal(
+		ui.widgets.get("pi-stash")?.some((line) => visibleWidth(line) > width),
+		false,
+	);
 });
 
 test("session startup shows the effective prefix binding in the stash widget", async () => {

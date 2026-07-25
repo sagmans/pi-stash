@@ -28,7 +28,7 @@ import {
 } from "./intents.ts";
 import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
-import { defaultStashBaseDir, resolveStashPaths } from "./paths.ts";
+import { defaultStashBaseDir, resolveStashPaths, scopeLabel } from "./paths.ts";
 import { type Claim, startStashBinding } from "./prefix.ts";
 import {
 	CommittedMutationError,
@@ -61,12 +61,17 @@ const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor
 
 // Narrow UI surface the orchestration needs. The real ExtensionContext.ui
 // satisfies this structurally; tests pass a minimal fake.
+type StashWidgetFactory = (
+	tui: unknown,
+	theme: Pick<Theme, "fg">,
+) => { render(width: number): string[]; invalidate(): void };
+
 export type StashUi = {
 	notify(message: string, type?: "info" | "warning" | "error"): void;
 	confirm(title: string, message: string, options?: { signal?: AbortSignal }): Promise<boolean>;
 	getEditorText(): string;
 	setEditorText(text: string): void;
-	setWidget(key: string, content: string[] | undefined): void;
+	setWidget(key: string, content: string[] | StashWidgetFactory | undefined): void;
 	theme: Pick<Theme, "fg" | "bold">;
 	custom<T>(
 		factory: (
@@ -100,14 +105,16 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 	if (recoveryPath) {
 		safeNotify(ui, `${CORRUPT_RECOVERY_MESSAGE}: ${recoveryPath}`, "warning");
 	}
-	ui.setWidget(
-		STASH_WIDGET_KEY,
-		store.entries.length > 0
-			? themedWidgetLines(store.entries, ui.theme, {
-					openHint: widgetOpenHints.get(ui) ?? false,
-				})
-			: undefined,
-	);
+	if (store.entries.length === 0) {
+		ui.setWidget(STASH_WIDGET_KEY, undefined);
+		return;
+	}
+	const entries = [...store.entries];
+	const openHint = widgetOpenHints.get(ui) ?? false;
+	ui.setWidget(STASH_WIDGET_KEY, (_tui, theme) => ({
+		render: (width) => themedWidgetLines(entries, theme, { openHint, width }),
+		invalidate: () => {},
+	}));
 }
 
 export type AssetDirRemover = (assetDir: string) => Promise<void>;
@@ -338,7 +345,7 @@ export async function openOverlay(
 		return;
 	}
 
-	const cwdLabel = shortCwd(session.cwd);
+	const cwdLabel = scopeLabel(session.cwd, process.env.HOME);
 	let overlay: StashOverlayComponent | undefined;
 	let cancelOverlay: (() => void) | undefined;
 	const chosen = await session.ui.custom<StashEntry | undefined>(
@@ -401,16 +408,6 @@ export async function openOverlay(
 		"Stash entry vanished before restore",
 		signal,
 	);
-}
-
-// Compact cwd label for the overlay header: collapse $HOME to ~ and tail the
-// last three segments when deep, so the panel stays narrow on long worktree paths.
-function shortCwd(cwd: string): string {
-	const home = process.env.HOME;
-	const display = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
-	const segments = display.split("/").filter(Boolean);
-	if (segments.length <= 3) return display;
-	return `…/${segments.slice(-3).join("/")}`;
 }
 
 function editorIsReadyForRestore(ui: StashUi): boolean {

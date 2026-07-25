@@ -5,10 +5,11 @@
 // setWidget with `undefined` when there is nothing to show, keeping the editor
 // area uncluttered when no stash exists.
 
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 
-export const MAX_WIDGET_LINES = 5;
+export const MAX_WIDGET_ENTRIES = 5;
 const DEFAULT_PREVIEW_WIDTH = 60;
 const DEFAULT_OPEN_HINT = "prefix+shift+s to open";
 
@@ -16,7 +17,8 @@ export type RenderOptions = {
 	/** False suppresses a shortcut hint when no binding provider is active. */
 	openHint?: string | false;
 	previewWidth?: number;
-	maxLines?: number;
+	maxEntries?: number;
+	width?: number;
 };
 
 export function firstNonEmptyLine(text: string): string {
@@ -28,8 +30,8 @@ export function firstNonEmptyLine(text: string): string {
 }
 
 export function truncateForWidget(value: string, width: number): string {
-	if (value.length <= width) return value;
-	return `${value.slice(0, Math.max(1, width - 1))}…`;
+	const truncated = truncateToWidth(sanitizeTerminalLine(value), Math.max(0, width), "…");
+	return sanitizeTerminalLine(truncated);
 }
 
 export function entryLabel(entry: StashEntry, previewWidth: number): string {
@@ -58,12 +60,15 @@ export function themedWidgetLines(
 	const configuredHint = options.openHint ?? DEFAULT_OPEN_HINT;
 	const openHint = configuredHint === false ? undefined : sanitizeTerminalLine(configuredHint);
 	const previewWidth = options.previewWidth ?? DEFAULT_PREVIEW_WIDTH;
-	const maxLines = options.maxLines ?? MAX_WIDGET_LINES;
+	const requestedEntries = options.maxEntries ?? MAX_WIDGET_ENTRIES;
+	const maxEntries = Number.isFinite(requestedEntries)
+		? Math.max(0, Math.floor(requestedEntries))
+		: MAX_WIDGET_ENTRIES;
 	const details = openHint ? `(${openHint}) · ${entries.length}` : String(entries.length);
 
 	const header = ` ${theme.fg("accent", "Stash")} ${theme.fg("muted", details)}`;
 	const lines: string[] = [header];
-	const visibleCount = Math.min(entries.length, maxLines);
+	const visibleCount = Math.min(entries.length, maxEntries);
 
 	for (const [index, entry] of entries.slice(0, visibleCount).entries()) {
 		const count = entry.assetCount ?? 0;
@@ -77,5 +82,7 @@ export function themedWidgetLines(
 		lines.push(theme.fg("dim", ` … +${entries.length - visibleCount} more`));
 	}
 
-	return lines;
+	if (options.width === undefined) return lines;
+	const width = Math.max(0, Math.floor(options.width));
+	return lines.map((line) => truncateToWidth(line, width, "…"));
 }

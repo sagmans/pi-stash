@@ -1,8 +1,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { StashEntry } from "../src/types.ts";
 import {
 	firstNonEmptyLine,
+	MAX_WIDGET_ENTRIES,
 	renderWidgetLines,
 	themedWidgetLines,
 	truncateForWidget,
@@ -57,14 +59,41 @@ test("does not mark entries without images", () => {
 	assert.ok(!lines[1]?.includes("[img]"));
 });
 
-test("caps visible lines and reports overflow", () => {
+test("caps visible entries and reports overflow without conflating rendered rows", () => {
 	const entries = Array.from({ length: 10 }, (_, index) =>
 		entry({ id: `id-${index}`, text: `e${index}` }),
 	);
-	const lines = renderWidgetLines(entries, { maxLines: 3, previewWidth: 40 });
-	// 1 header + 3 entries + 1 overflow line
+	const lines = renderWidgetLines(entries, { maxEntries: 3, previewWidth: 40 });
+	// Header + three entry rows + one overflow row.
 	assert.equal(lines.length, 5);
 	assert.ok(lines[lines.length - 1]?.includes("+7 more"));
+	assert.equal(MAX_WIDGET_ENTRIES, 5);
+});
+
+test("every widget row fits terminal columns at narrow and Unicode boundaries", () => {
+	const entries = [
+		entry({ message: `e\u0301 ${"界".repeat(20)} 🧑🏽‍💻 family 👨‍👩‍👧‍👦` }),
+		entry({ text: "second" }),
+	];
+	for (const width of [0, 1, 2, 5, 12, 20, 40]) {
+		const lines = renderWidgetLines(entries, {
+			openHint: "ctrl+x then shift+s to open",
+			previewWidth: 80,
+			width,
+		});
+		assert.equal(
+			lines.some((line) => visibleWidth(line) > width),
+			false,
+			`row exceeded ${width} columns`,
+		);
+	}
+});
+
+test("widget entry limits include zero and exact overflow boundaries", () => {
+	const entries = [entry({ id: "one" }), entry({ id: "two" })];
+	assert.equal(renderWidgetLines(entries, { maxEntries: 0 }).length, 2);
+	assert.equal(renderWidgetLines(entries, { maxEntries: 1 }).length, 3);
+	assert.equal(renderWidgetLines(entries, { maxEntries: 2 }).length, 3);
 });
 
 test("firstNonEmptyLine skips blank leading lines", () => {
@@ -72,9 +101,11 @@ test("firstNonEmptyLine skips blank leading lines", () => {
 	assert.equal(firstNonEmptyLine("   "), "");
 });
 
-test("truncateForWidget adds ellipsis past the width", () => {
+test("truncateForWidget measures terminal columns instead of code units", () => {
 	assert.equal(truncateForWidget("short", 10), "short");
 	assert.equal(truncateForWidget("abcdefghij", 5), "abcd…");
+	assert.equal(visibleWidth(truncateForWidget("界界界", 5)), 5);
+	assert.equal(visibleWidth(truncateForWidget("e\u0301e\u0301e\u0301", 2)), 2);
 });
 
 test("widget labels cannot emit terminal controls or extra rows", () => {

@@ -69,6 +69,26 @@ function truncateToUtf8Bytes(value: string, maxBytes: number): string {
 	return result;
 }
 
+export function scopeLabel(cwd: string, homeDirectory?: string): string {
+	const pathApi = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(cwd) ? path.win32 : path.posix;
+	const normalizedCwd = pathApi.normalize(cwd);
+	let display = normalizedCwd;
+	if (homeDirectory && pathApi.isAbsolute(homeDirectory)) {
+		const normalizedHome = pathApi.normalize(homeDirectory);
+		const relative = pathApi.relative(normalizedHome, normalizedCwd);
+		const isWithinHome =
+			relative === "" ||
+			(relative !== ".." &&
+				!relative.startsWith(`..${pathApi.sep}`) &&
+				!pathApi.isAbsolute(relative));
+		if (isWithinHome) display = relative ? `~${pathApi.sep}${relative}` : "~";
+	}
+
+	const segments = display.split(pathApi.sep).filter(Boolean);
+	if (segments.length <= 4) return display;
+	return `…${pathApi.sep}${segments.slice(-3).join(pathApi.sep)}`;
+}
+
 export function defaultStashBaseDir(agentDir: string = getAgentDir()): string {
 	return path.join(agentDir, "pi-stash");
 }

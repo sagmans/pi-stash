@@ -52,6 +52,14 @@ commands.
 | Terminal | tested under [Herdr](https://github.com/fitchmultz/herdr) and standard macOS terminals |
 | Mode | TUI only. Sessions without UI remain inert. |
 
+## Limits
+
+- Saved draft count and draft-text size have no configured application limit; available private storage is the bound.
+- The widget shows at most 5 entry rows, plus one header row and an overflow row when needed. Every row is truncated by terminal display columns.
+- The list overlay shows at most 10 entry rows at once. Draft preview uses 10 rendered terminal rows; one logical line may occupy multiple rendered rows after wrapping.
+- One draft may persist at most 10 distinct images, each at most 20 MiB, with at most 50 MiB of distinct image bytes in total.
+- Worktree storage keys use at most 200 UTF-8 bytes before the file or asset-directory suffix.
+
 ## Storage and privacy
 
 Each exact working directory maps to one JSON file beneath the configured Pi
