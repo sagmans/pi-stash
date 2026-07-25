@@ -5,7 +5,13 @@
 	"license": "MIT",
 	"files": [
 		"index.ts",
-		"src"
+		"src",
+		"docs",
+		"CHANGELOG.md",
+		"CONTEXT.md",
+		"CONTRIBUTING.md",
+		"RELEASE.md",
+		"SECURITY.md"
 	],
 	"repository": {
 		"type": "git",

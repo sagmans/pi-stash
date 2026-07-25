@@ -2,7 +2,7 @@
 
 Owner-authorized maintenance. Public bug reports are welcome; external pull
 requests and feature requests are not accepted — see the
-[participation policy](https://github.com/sagmans/pi-stash/blob/main/CONTRIBUTING.md).
+[participation policy](../CONTRIBUTING.md).
 For behavior and install, see [`README.md`](../README.md).
 
 Requires Node.js >= 22.19.0 (tests use `node --experimental-transform-types`).
@@ -30,7 +30,7 @@ inspect the package job and every expanded matrix leg before rerunning the
 workflow. The Herdr smoke remains outside hosted CI; download its
 `npm-package` artifact and pass the `.tgz` to the smoke on a Herdr maintainer
 host for exact-artifact evidence. See
-[`docs/maintainer-smoke.md`](https://github.com/sagmans/pi-stash/blob/main/docs/maintainer-smoke.md).
+[maintainer smoke test](maintainer-smoke.md).
 
 The audit currently reports moderate `GHSA-j3f2-48v5-ccww` in the dev-only
 `protobufjs` copy nested under pi; reassess it with every pi dependency update.

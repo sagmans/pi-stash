@@ -28,9 +28,9 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
    `.tgz` after `--`; see [`docs/maintainer-smoke.md`](docs/maintainer-smoke.md).
 5. README accuracy pass: every documented command/path still behaves as written.
 6. Package-content pass: `npm pack --dry-run` contains only the runtime files
-   declared by `package.json` plus npm's mandatory package metadata and standard
-   documentation (`package.json`, README, and LICENSE); it contains no local
-   state, tests, or maintainer tooling.
+   and package-relative documentation declared by `package.json`, plus npm's
+   mandatory metadata, README, and LICENSE; it contains no local state, tests,
+   smoke drivers, release scripts, or other maintainer tooling.
 7. Changelog roll-forward: `CHANGELOG.md` carries a new dated `[X.Y.Z]`
    section for the target version with the relevant `Unreleased` entries,
    and exactly one `Unreleased` section remains.

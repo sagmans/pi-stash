@@ -2,27 +2,36 @@
 
 Persistent editor draft stashes for [pi](https://github.com/earendil-works/pi-coding-agent).
 
-`pi-stash` saves unsent editor text per working directory under the configured
-Pi agent directory's `pi-stash/` subtree (normally `~/.pi/agent/pi-stash/`), then
-restores it later without submitting it to a model. Temporary pasted images are
-copied into private stash storage so restored references survive OS cleanup.
+`pi-stash` saves unsent editor text per exact working directory under the
+configured Pi agent directory's `pi-stash/` subtree, then restores it without
+submitting it to a model. Recognized temporary clipboard images are copied into
+private stash storage so restored references survive OS cleanup.
 
 ## Features
 
-- Stash the current editor draft and clear the editor.
-- List, filter, preview, restore, drop, or clear saved drafts.
+- Stash the current editor draft and clear the editor after durable persistence.
+- List, filter, preview, restore, drop, or clear newest-first entries.
 - Keep linked worktrees and ordinary directories isolated by exact working directory.
-- Store entries newest-first with atomic writes, a cross-process lock, corrupt-file quarantine, and private permissions.
-- Preserve referenced temporary images; leave repository and other stable absolute paths live.
+- Use atomic writes, cross-process locking, crash recovery, corruption quarantine, and private permissions.
+- Own only recognized temporary clipboard images; leave repository and other absolute paths unchanged.
 - Integrate with `prefix-keybindings` when available; slash commands remain the fallback.
 
 ## Install
+
+> **Security:** Pi does not sandbox extensions. Installing pi-stash executes its
+> code with the coding agent's full local privileges, including access to files,
+> processes, credentials available to Pi, and the network. Review and trust the
+> package version before installing. pi-stash's runtime code performs no network
+> requests, but that is an implementation property, not a sandbox boundary.
 
 ```bash
 pi install npm:@sagmans/pi-stash
 ```
 
-Install from npm so pi only offers updates after a published release.
+Install from npm so Pi offers updates only after a published release. Supported
+runtime: macOS or Linux, Node.js `>=22.19.0`, Pi `0.81.1`, interactive TUI mode.
+Native Windows is unsupported because storage relies on POSIX ownership and
+permission guarantees.
 
 ## Usage
 
@@ -35,61 +44,57 @@ Install from npm so pi only offers updates after a published release.
 | Remove unreferenced restored images | `/stash-cleanup` | — |
 | Delete all entries after confirmation | `/stash-clear` | — |
 
-Index `0` is newest; selectors accept a displayed zero-based index or exact entry
-ID. Restore requires an empty editor and reports how to clear or stash current
-text when blocked. A successful restore removes the stash entry but durably
-leases copied images while the editor still references them. `/stash-cleanup`
-removes abandoned leases and retries prior cleanup failures. Drop and confirmed
-clear permanently remove entries and queue their copied images for deletion.
+Index `0` is newest. Selectors accept a displayed zero-based index or exact
+entry ID. Restore requires an empty editor. A successful restore removes the
+entry but leases copied images while editor text references them. Drop and
+confirmed clear remove entries first, then durably queue owned images for
+best-effort deletion. `/stash-cleanup` removes leases not referenced by the
+current editor and retries pending failures; close other Pi sessions for the
+same scope before using it.
 
 The list overlay supports configured up/down and confirm/cancel keys, typing to
 filter, the configured preview key, `F5` refresh, and `d` to drop from preview.
-Empty selections and missing command selectors produce a notice without changing
-stored drafts.
-
-The optional shortcuts require a compatible `prefix-keybindings` extension.
-Without it, pi-stash shows one notice and remains fully usable through slash
-commands.
-
-## Supported environments
-
-| Component | Supported |
-| --- | --- |
-| OS | macOS (primary), Linux. Windows unsupported (POSIX permissions). |
-| Node.js | `>=22.19.0` (CI tests `22.19.0` and `24`) |
-| pi | tested at `0.81.1` |
-| Terminal | tested under [Herdr](https://github.com/fitchmultz/herdr) and standard macOS terminals |
-| Mode | TUI only. Sessions without UI remain inert. |
+Empty selections and missing selectors leave storage unchanged. Without a
+compatible `prefix-keybindings` extension, one notice appears and every slash
+command remains available.
 
 ## Limits
 
-- Saved draft count and draft-text size have no configured application limit; available private storage is the bound.
-- The widget shows at most 5 entry rows, plus one header row and an overflow row when needed. Every row is truncated by terminal display columns.
-- The list overlay shows at most 10 entry rows at once. Draft preview uses 10 rendered terminal rows; one logical line may occupy multiple rendered rows after wrapping.
-- One draft may persist at most 10 distinct images, each at most 20 MiB, with at most 50 MiB of distinct image bytes in total.
-- Worktree storage keys use at most 200 UTF-8 bytes before the file or asset-directory suffix.
+- Draft count and text size have no application limit; private storage capacity is the bound.
+- Widget: 5 entry rows. Overlay list: 10 entry rows. Wrapped preview: 10 terminal rows.
+- Persisted images: 10 distinct images per draft, 20 MiB each, 50 MiB total distinct bytes.
+- Worktree storage key: at most 200 UTF-8 bytes before file or directory suffixes.
 
-## Storage and privacy
+## Storage, privacy, and recovery
 
-Each exact working directory maps to one JSON file beneath the configured Pi
-agent directory's `pi-stash/` subtree; copied images live in an adjacent
-per-entry asset directory. Directories use mode `0700` and files use `0600`.
-pi-stash performs no network requests.
+Stashes are local plaintext. Directories use `0700`; JSON, metadata, and copied
+images use `0600`. pi-stash rejects links, foreign ownership, and unexpected
+file types instead of following them. Entries have no automatic expiry.
 
-Stashes are local plaintext and may contain sensitive drafts. Protect the host
-account and never share stash files or raw terminal captures without redaction.
+Startup migrates the current scope from the historical fixed
+`~/.pi/agent/pi-stash/` root when Pi now uses another configured agent
+directory. It resumes interrupted migration but never guesses through a
+conflicting destination. Unsupported future schemas remain untouched and make
+the scope unavailable. Invalid current data is quarantined under a reported
+recovery path. Cleanup failures retain retry metadata rather than resurrecting
+deleted entries.
+
+Read [storage, migration, image lifecycle, and non-destructive recovery](docs/storage-recovery.md)
+before inspecting or changing stash files. Never share stash data or raw
+terminal captures without redaction.
 
 ## Documentation
 
-- [`docs/maintainer-development.md`](https://github.com/sagmans/pi-stash/blob/main/docs/maintainer-development.md) — maintainer setup, commands, hooks
-- [`docs/maintainer-smoke.md`](https://github.com/sagmans/pi-stash/blob/main/docs/maintainer-smoke.md) — disposable Herdr smoke test
-- [`docs/adr/`](https://github.com/sagmans/pi-stash/tree/main/docs/adr) — architecture decision records
-- [`CONTEXT.md`](https://github.com/sagmans/pi-stash/blob/main/CONTEXT.md) — domain language
-- [`CONTRIBUTING.md`](https://github.com/sagmans/pi-stash/blob/main/CONTRIBUTING.md) — participation policy and bug reports
-- [`SECURITY.md`](https://github.com/sagmans/pi-stash/blob/main/SECURITY.md) — vulnerability reporting
-- [`RELEASE.md`](https://github.com/sagmans/pi-stash/blob/main/RELEASE.md) — release policy
-- [`CHANGELOG.md`](https://github.com/sagmans/pi-stash/blob/main/CHANGELOG.md) — version history
+- [Storage and recovery](docs/storage-recovery.md) — location, migration, images, retention, failure handling
+- [Maintainer development](docs/maintainer-development.md) — setup, checks, and hooks
+- [Maintainer smoke](docs/maintainer-smoke.md) — packaged two-launch Herdr test
+- [Architecture decisions](docs/adr/) — durable design choices
+- [Domain language](CONTEXT.md) — precise runtime terminology
+- [Participation policy](CONTRIBUTING.md) — bug reports and project scope
+- [Security policy](SECURITY.md) — private vulnerability reporting
+- [Release policy](RELEASE.md) — gates, waivers, and trusted publishing
+- [Changelog](CHANGELOG.md) — version history
 
 ## License
 
-[MIT](LICENSE) · [Security](https://github.com/sagmans/pi-stash/blob/main/SECURITY.md) · [Report bugs](https://github.com/sagmans/pi-stash/blob/main/CONTRIBUTING.md) · [Releases](https://github.com/sagmans/pi-stash/blob/main/RELEASE.md)
+[MIT](LICENSE) · [Security](SECURITY.md) · [Report bugs](CONTRIBUTING.md) · [Releases](RELEASE.md)
