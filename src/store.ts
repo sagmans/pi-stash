@@ -8,10 +8,12 @@
 // drafts. A corrupt file is quarantined rather than blindly overwritten, so a
 // hand-edit mistake never silently destroys saved stashes.
 
-import { mkdir, rename, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { lstat, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 
 import type { StashPaths } from "./paths.ts";
 import {
@@ -44,6 +46,10 @@ const LOCK_TIMEOUT_MS = 2000;
 const LOCK_STALE_MS = 30_000;
 const LOCK_OWNER_FILE = "owner.json";
 const LOCK_RECLAIM_SUFFIX = ".reclaim";
+const PROC_STAT_START_TIME_INDEX = 19;
+const execFileAsync = promisify(execFile);
+const PROCESS_GENERATION_FALLBACK = `opaque:${createNewId()}`;
+let selfProcessGeneration: Promise<string> | undefined;
 const ACTIVE_CLEANUP_MESSAGE = "active stash id queued for cleanup";
 const DUPLICATE_STASH_ID_MESSAGE = "duplicate stash id";
 const INVALID_ASSET_COUNT_MESSAGE = "invalid asset count";
@@ -51,13 +57,22 @@ const INVALID_CREATED_AT_MESSAGE = "invalid stash creation time";
 const PENDING_STASH_ID_MESSAGE = "stash id pending asset cleanup";
 const COMMITTED_MUTATION_ERROR_MESSAGE = "stash mutation committed but lock release failed";
 const MUTATION_AND_UNLOCK_ERROR_MESSAGE = "stash mutation and lock release both failed";
+const LOCK_GENERATION_CHANGED_MESSAGE = "stash lock generation changed before release";
 
 type LockOwner = {
 	pid: number;
 	host: string;
 	token: string;
+	generation: string;
 	createdAt: string;
 };
+
+type LockState =
+	| { kind: "missing" }
+	| { kind: "dead"; owner: LockOwner }
+	| { kind: "live"; owner: LockOwner }
+	| { kind: "uncertain"; owner: LockOwner }
+	| { kind: "malformed" };
 
 export type AddEntryInput = {
 	text: string;
@@ -456,13 +471,13 @@ async function withStashLock<Result>(
 ): Promise<Result> {
 	await ensurePrivateDirectory(path.dirname(filePath));
 	const lockPath = `${filePath}.lock`;
-	const token = await acquireStashLock(lockPath);
+	const owner = await acquireStashLock(lockPath);
 	let result: Result;
 	try {
 		result = await operation();
 	} catch (operationError) {
 		try {
-			await releaseStashLock(lockPath, token);
+			await releaseStashLock(lockPath, owner);
 		} catch (cleanupError) {
 			if (operationError instanceof CommittedMutationError) {
 				throw new CommittedMutationError(
@@ -478,7 +493,7 @@ async function withStashLock<Result>(
 		throw operationError;
 	}
 	try {
-		await releaseStashLock(lockPath, token);
+		await releaseStashLock(lockPath, owner);
 	} catch (cleanupError) {
 		if (mutation) throw new CommittedMutationError(result, cleanupError);
 		throw cleanupError;
@@ -486,20 +501,23 @@ async function withStashLock<Result>(
 	return result;
 }
 
-async function acquireStashLock(lockPath: string): Promise<string> {
+async function acquireStashLock(lockPath: string): Promise<LockOwner> {
 	const startedAt = Date.now();
-	const token = createNewId();
 	for (;;) {
 		try {
 			await mkdir(lockPath, { mode: PRIVATE_DIR_MODE });
 			try {
+				if (await pathExists(`${lockPath}${LOCK_RECLAIM_SUFFIX}`)) {
+					await rm(lockPath, { force: true, recursive: true });
+					await delay(LOCK_RETRY_MS);
+					continue;
+				}
 				await ensurePrivateDirectory(lockPath, "stash lock");
-				await writeLockOwner(lockPath, token);
+				return await writeLockOwner(lockPath);
 			} catch (error) {
 				await rm(lockPath, { force: true, recursive: true });
 				throw error;
 			}
-			return token;
 		} catch (error) {
 			if (!hasErrorCode(error, "EEXIST")) throw error;
 			try {
@@ -508,24 +526,26 @@ async function acquireStashLock(lockPath: string): Promise<string> {
 				if (hasErrorCode(validationError, "ENOENT")) continue;
 				throw validationError;
 			}
-			if (await reclaimStaleLock(lockPath)) continue;
+			if (await reclaimAbandonedLock(lockPath)) continue;
 			if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
-				throw new Error(`timed out waiting for pi-stash lock ${lockPath}`);
+				throw new Error(lockTimeoutMessage(lockPath, await inspectLockState(lockPath)));
 			}
 			await delay(LOCK_RETRY_MS);
 		}
 	}
 }
 
-async function writeLockOwner(lockPath: string, token: string): Promise<void> {
+async function writeLockOwner(lockPath: string): Promise<LockOwner> {
 	const owner: LockOwner = {
 		pid: process.pid,
 		host: hostname(),
-		token,
+		token: createNewId(),
+		generation: await readProcessGeneration(process.pid),
 		createdAt: new Date().toISOString(),
 	};
 	const ownerPath = path.join(lockPath, LOCK_OWNER_FILE);
 	await writePrivateTextFileExclusive(ownerPath, `${JSON.stringify(owner)}\n`);
+	return owner;
 }
 
 async function readLockOwner(lockPath: string): Promise<LockOwner | undefined> {
@@ -556,55 +576,56 @@ function isLockOwner(value: unknown): value is LockOwner {
 		typeof value.host === "string" &&
 		"token" in value &&
 		typeof value.token === "string" &&
+		"generation" in value &&
+		typeof value.generation === "string" &&
+		value.generation.length > 0 &&
 		"createdAt" in value &&
 		typeof value.createdAt === "string"
 	);
 }
 
-async function releaseStashLock(lockPath: string, token: string): Promise<void> {
+async function releaseStashLock(lockPath: string, expected: LockOwner): Promise<void> {
 	const owner = await readLockOwner(lockPath);
-	if (owner?.token === token) await rm(lockPath, { force: true, recursive: true });
+	if (!sameLockGeneration(owner, expected)) throw new Error(LOCK_GENERATION_CHANGED_MESSAGE);
+	await rm(lockPath, { force: true, recursive: true });
 }
 
-async function reclaimStaleLock(lockPath: string): Promise<boolean> {
+async function reclaimAbandonedLock(lockPath: string): Promise<boolean> {
 	const reclaimPath = `${lockPath}${LOCK_RECLAIM_SUFFIX}`;
-	const reclaimToken = await acquireReclaimGuard(reclaimPath);
-	if (!reclaimToken) return false;
+	const reclaimOwner = await acquireReclaimGuard(reclaimPath);
+	if (!reclaimOwner) return false;
 	try {
-		// Recheck only after winning the atomic reclamation guard. Without this
-		// guard, a second reclaimer could delete a new owner's replacement lock.
-		if (!(await isStaleAbandonedLock(lockPath))) return false;
+		// New owners observe the guard before publishing their generation, while
+		// this second check prevents an earlier contender from deleting a live lock.
+		if (!(await isRecoverableLock(lockPath))) return false;
 		await removePrivateDirectory(lockPath, "stash lock");
 		return true;
 	} finally {
-		await releaseStashLock(reclaimPath, reclaimToken);
+		await releaseStashLock(reclaimPath, reclaimOwner);
 	}
 }
 
-async function acquireReclaimGuard(reclaimPath: string): Promise<string | undefined> {
-	const token = createNewId();
+async function acquireReclaimGuard(reclaimPath: string): Promise<LockOwner | undefined> {
 	try {
 		await mkdir(reclaimPath, { mode: PRIVATE_DIR_MODE });
 		try {
 			await ensurePrivateDirectory(reclaimPath, "stash lock reclamation guard");
-			await writeLockOwner(reclaimPath, token);
+			return await writeLockOwner(reclaimPath);
 		} catch (error) {
 			await rm(reclaimPath, { force: true, recursive: true });
 			throw error;
 		}
-		return token;
 	} catch (error) {
 		if (!hasErrorCode(error, "EEXIST")) throw error;
 		await assertPrivateDirectory(reclaimPath, "stash lock reclamation guard");
-		// A crashed reclaimer must not permanently block every future writer.
-		if (await isStaleAbandonedLock(reclaimPath)) {
+		if (await isRecoverableLock(reclaimPath)) {
 			await removePrivateDirectory(reclaimPath, "stash lock reclamation guard");
 		}
 		return undefined;
 	}
 }
 
-async function isStaleAbandonedLock(lockPath: string): Promise<boolean> {
+async function isRecoverableLock(lockPath: string): Promise<boolean> {
 	let stats: Awaited<ReturnType<typeof assertPrivateDirectory>>;
 	try {
 		stats = await assertPrivateDirectory(lockPath, "stash lock");
@@ -612,9 +633,92 @@ async function isStaleAbandonedLock(lockPath: string): Promise<boolean> {
 		if (hasErrorCode(error, "ENOENT")) return false;
 		throw error;
 	}
-	if (Date.now() - stats.mtimeMs <= LOCK_STALE_MS) return false;
+	const state = await inspectLockState(lockPath);
+	if (state.kind === "dead") return true;
+	return state.kind === "malformed" && Date.now() - stats.mtimeMs > LOCK_STALE_MS;
+}
+
+async function inspectLockState(lockPath: string): Promise<LockState> {
 	const owner = await readLockOwner(lockPath);
-	return !owner || (owner.host === hostname() && !isProcessAlive(owner.pid));
+	if (!owner) return (await pathExists(lockPath)) ? { kind: "malformed" } : { kind: "missing" };
+	if (owner.host !== hostname()) return { kind: "uncertain", owner };
+	if (!isProcessAlive(owner.pid)) return { kind: "dead", owner };
+	const generation = await readProcessGeneration(owner.pid).catch(() => undefined);
+	if (generation) {
+		return generation === owner.generation ? { kind: "live", owner } : { kind: "dead", owner };
+	}
+	const stats = await assertPrivateDirectory(lockPath, "stash lock");
+	return Date.now() - stats.mtimeMs <= LOCK_STALE_MS
+		? { kind: "live", owner }
+		: { kind: "uncertain", owner };
+}
+
+export async function readProcessGeneration(pid: number): Promise<string> {
+	if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("invalid process id");
+	if (pid === process.pid) {
+		selfProcessGeneration ??= readExternalProcessGeneration(pid).catch(
+			() => PROCESS_GENERATION_FALLBACK,
+		);
+		return selfProcessGeneration;
+	}
+	return readExternalProcessGeneration(pid);
+}
+
+async function readExternalProcessGeneration(pid: number): Promise<string> {
+	try {
+		const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+		const commandEnd = stat.lastIndexOf(")");
+		const fields =
+			commandEnd >= 0
+				? stat
+						.slice(commandEnd + 2)
+						.trim()
+						.split(/\s+/u)
+				: [];
+		const startTime = fields[PROC_STAT_START_TIME_INDEX];
+		if (startTime) return `proc:${startTime}`;
+	} catch (error) {
+		if (!hasErrorCode(error, "ENOENT")) throw error;
+	}
+	const { stdout } = await execFileAsync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+		encoding: "utf8",
+	});
+	const startTime = stdout.trim();
+	if (!startTime) throw new Error("process generation unavailable");
+	return `ps:${startTime}`;
+}
+
+function sameLockGeneration(actual: LockOwner | undefined, expected: LockOwner): boolean {
+	return actual?.token === expected.token && actual.generation === expected.generation;
+}
+
+function lockTimeoutMessage(lockPath: string, state: LockState): string {
+	switch (state.kind) {
+		case "live":
+			return `timed out waiting for pi-stash lock ${lockPath}: live lock owner pid ${state.owner.pid}`;
+		case "uncertain":
+			return `timed out waiting for pi-stash lock ${lockPath}: uncertain lock owner pid ${state.owner.pid}`;
+		case "malformed":
+			return `timed out waiting for pi-stash lock ${lockPath}: malformed lock owner metadata`;
+		case "dead":
+			return `timed out recovering dead pi-stash lock ${lockPath}`;
+		case "missing":
+			return `timed out waiting for replaced pi-stash lock ${lockPath}`;
+		default: {
+			const exhaustive: never = state;
+			return exhaustive;
+		}
+	}
+}
+
+async function pathExists(target: string): Promise<boolean> {
+	try {
+		await lstat(target);
+		return true;
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return false;
+		throw error;
+	}
 }
 
 function isProcessAlive(pid: number): boolean {

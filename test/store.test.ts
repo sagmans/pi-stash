@@ -1,4 +1,6 @@
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
 	chmodSync,
 	existsSync,
@@ -15,9 +17,15 @@ import {
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import { resolveStashPaths } from "../src/paths.ts";
-import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/store.ts";
+import {
+	loadStashStore,
+	readProcessGeneration,
+	STASH_SCHEMA_VERSION,
+	writeStashFile,
+} from "../src/store.ts";
 
 const CURRENT_SCHEMA_VERSION = 2;
 const DEAD_PROCESS_ID = 2_147_483_647;
@@ -285,6 +293,34 @@ test("add reports its committed result when lock release fails", async () => {
 	assert.equal(reopened.entryCount, 1);
 	assert.equal(reopened.entries[0]?.id, resultId);
 	assert.equal(reopened.entries[0]?.text, "committed");
+});
+
+test("add cannot release a replacement lock generation", async () => {
+	const paths = resolveStashPaths("/replacement-lock", baseDir);
+	const lockPath = `${paths.stashFile}.lock`;
+	const store = await loadStashStore(paths, clock, async (filePath, file) => {
+		writeFileSync(filePath, JSON.stringify(file));
+		writeFileSync(
+			path.join(lockPath, "owner.json"),
+			JSON.stringify({
+				pid: process.pid,
+				host: hostname(),
+				token: "replacement-token",
+				generation: await readProcessGeneration(process.pid),
+				createdAt: new Date().toISOString(),
+			}),
+		);
+	});
+
+	await assert.rejects(
+		() => store.add({ text: "committed under original lock" }),
+		(error: unknown) =>
+			(error as { committed?: boolean }).committed === true &&
+			String((error as { cause?: unknown }).cause).includes("generation changed"),
+	);
+	assert.equal(existsSync(lockPath), true);
+	rmSync(lockPath, { recursive: true, force: true });
+	assert.equal((await loadStashStore(paths, clock)).entryCount, 1);
 });
 
 test("add reports a committed result when directory sync fails after rename", async () => {
@@ -647,6 +683,59 @@ test("mutation after corruption does not resurrect cached drafts", async () => {
 	);
 });
 
+test("reclaims a fresh lock owned by a provably dead local process", async () => {
+	const paths = resolveStashPaths("/fresh-dead-lock", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const lockPath = `${paths.stashFile}.lock`;
+	mkdirSync(lockPath);
+	writeFileSync(
+		path.join(lockPath, "owner.json"),
+		JSON.stringify({
+			pid: DEAD_PROCESS_ID,
+			host: hostname(),
+			token: TEST_LOCK_TOKEN,
+			generation: "dead-generation",
+			createdAt: new Date().toISOString(),
+		}),
+	);
+
+	await store.add({ text: "recovered immediately" });
+
+	assert.equal(store.entries[0]?.text, "recovered immediately");
+});
+
+test("reclaims a reused live pid whose process generation differs", async () => {
+	const paths = resolveStashPaths("/reused-pid-lock", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const lockPath = `${paths.stashFile}.lock`;
+	mkdirSync(lockPath);
+	writeFileSync(
+		path.join(lockPath, "owner.json"),
+		JSON.stringify({
+			pid: process.pid,
+			host: hostname(),
+			token: TEST_LOCK_TOKEN,
+			generation: `${await readProcessGeneration(process.pid)}-previous`,
+			createdAt: new Date().toISOString(),
+		}),
+	);
+
+	await store.add({ text: "pid safely reused" });
+
+	assert.equal(store.entries[0]?.text, "pid safely reused");
+});
+
+test("diagnoses malformed fresh lock metadata without reclaiming it", async () => {
+	const paths = resolveStashPaths("/malformed-lock", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const lockPath = `${paths.stashFile}.lock`;
+	mkdirSync(lockPath);
+	writeFileSync(path.join(lockPath, "owner.json"), "not-json");
+
+	await assert.rejects(() => store.add({ text: "blocked" }), /malformed lock owner metadata/);
+	assert.equal(existsSync(lockPath), true);
+});
+
 test("does not reclaim a stale-looking lock owned by a live process", async () => {
 	const paths = resolveStashPaths("/live-lock", baseDir);
 	const store = await loadStashStore(paths, clock);
@@ -658,6 +747,7 @@ test("does not reclaim a stale-looking lock owned by a live process", async () =
 			pid: process.pid,
 			host: hostname(),
 			token: TEST_LOCK_TOKEN,
+			generation: await readProcessGeneration(process.pid),
 			createdAt: new Date().toISOString(),
 		}),
 	);
@@ -665,6 +755,40 @@ test("does not reclaim a stale-looking lock owned by a live process", async () =
 	utimesSync(lockPath, staleTime, staleTime);
 
 	await assert.rejects(() => store.add({ text: "blocked" }), /timed out waiting/);
+});
+
+test("a live cross-process owner blocks access and its crash is recovered immediately", async (t) => {
+	const paths = resolveStashPaths("/cross-process-lock", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const storeModule = pathToFileURL(path.resolve("src/store.ts")).href;
+	const child = spawn(
+		process.execPath,
+		[
+			"--disable-warning=ExperimentalWarning",
+			"--experimental-transform-types",
+			"--input-type=module",
+			"--eval",
+			`import { withStashFileLock } from ${JSON.stringify(storeModule)};
+await withStashFileLock(${JSON.stringify(paths.stashFile)}, async () => {
+  process.stdout.write("locked\\n");
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
+});`,
+		],
+		{ cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
+	);
+	t.after(() => child.kill("SIGKILL"));
+	await new Promise<void>((resolve, reject) => {
+		child.stdout?.once("data", () => resolve());
+		child.once("error", reject);
+		child.once("exit", (code) => reject(new Error(`lock child exited early: ${code}`)));
+	});
+
+	await assert.rejects(() => store.add({ text: "blocked" }), /live lock owner/);
+	child.kill("SIGKILL");
+	await once(child, "exit");
+	await store.add({ text: "recovered after crash" });
+
+	assert.equal(store.entries[0]?.text, "recovered after crash");
 });
 
 test("reclaims a stale lock owned by a dead local process", async () => {
@@ -678,6 +802,7 @@ test("reclaims a stale lock owned by a dead local process", async () => {
 			pid: DEAD_PROCESS_ID,
 			host: hostname(),
 			token: TEST_LOCK_TOKEN,
+			generation: "dead-generation",
 			createdAt: new Date().toISOString(),
 		}),
 	);
@@ -702,6 +827,7 @@ test("reclaims an abandoned stale lock-reclamation guard", async () => {
 				pid: DEAD_PROCESS_ID,
 				host: hostname(),
 				token: TEST_LOCK_TOKEN,
+				generation: "dead-generation",
 				createdAt: new Date().toISOString(),
 			}),
 		);
