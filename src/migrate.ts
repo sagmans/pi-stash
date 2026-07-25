@@ -17,6 +17,7 @@ import {
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
+	syncPrivateDirectory,
 	writePrivateTextFileExclusive,
 } from "./private-fs.ts";
 import { withStashFileLock } from "./store.ts";
@@ -117,6 +118,7 @@ async function migrateLocked(
 
 	await removeMigratedSource(source, marker);
 	await unlink(markerPath);
+	await syncPrivateDirectory(path.dirname(markerPath));
 	return { kind: markerExists ? "resumed" : "migrated" };
 }
 
@@ -270,6 +272,8 @@ async function copyAssetDirectory(source: string, destination: string): Promise<
 			await writePrivateBytes(destinationFile, bytes);
 		}
 	}
+	await syncPrivateDirectory(destination, "migrated asset directory");
+	await syncPrivateDirectory(path.dirname(destination));
 }
 
 async function readPrivateBytes(filePath: string, label: string): Promise<Buffer> {
@@ -295,6 +299,7 @@ async function writePrivateBytes(filePath: string, bytes: Buffer): Promise<void>
 	try {
 		await handle.writeFile(bytes);
 		await handle.chmod(PRIVATE_FILE_MODE);
+		await handle.sync();
 		succeeded = true;
 	} finally {
 		await handle.close();
@@ -307,6 +312,7 @@ async function installPrivateTextFile(filePath: string, text: string): Promise<v
 	await writePrivateTextFileExclusive(tempPath, text);
 	try {
 		await link(tempPath, filePath);
+		await syncPrivateDirectory(path.dirname(filePath));
 	} finally {
 		await unlink(tempPath).catch(() => undefined);
 	}

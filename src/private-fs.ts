@@ -6,6 +6,7 @@
 
 import { constants, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, rm, unlink } from "node:fs/promises";
+import path from "node:path";
 
 export const PRIVATE_DIR_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
@@ -29,6 +30,7 @@ export async function ensurePrivateDirectory(
 	const handle = await openValidatedDirectory(directory, label);
 	try {
 		await handle.chmod(PRIVATE_DIR_MODE);
+		await handle.sync();
 	} finally {
 		await handle.close();
 	}
@@ -38,6 +40,18 @@ export async function assertPrivateDirectory(directory: string, label: string): 
 	const handle = await openValidatedDirectory(directory, label);
 	try {
 		return await handle.stat();
+	} finally {
+		await handle.close();
+	}
+}
+
+export async function syncPrivateDirectory(
+	directory: string,
+	label = "storage directory",
+): Promise<void> {
+	const handle = await openValidatedDirectory(directory, label);
+	try {
+		await handle.sync();
 	} finally {
 		await handle.close();
 	}
@@ -73,6 +87,7 @@ export async function writePrivateTextFileExclusive(filePath: string, data: stri
 	try {
 		await handle.writeFile(data, "utf8");
 		await handle.chmod(PRIVATE_FILE_MODE);
+		await handle.sync();
 		succeeded = true;
 	} finally {
 		await handle.close();
@@ -101,6 +116,7 @@ export async function quarantinePrivateFile(
 			assertSameIdentity(sourceStats, identity, "quarantine source");
 			await unlink(filePath);
 			moved = true;
+			await syncPrivateDirectory(path.dirname(filePath));
 			return candidate;
 		} finally {
 			if (!moved) await unlink(candidate).catch(() => undefined);
@@ -123,6 +139,7 @@ export async function removePrivateDirectory(
 	assertDirectory(stats, label);
 	assertCurrentUserOwns(stats, label);
 	await rm(directory, { recursive: true });
+	await syncPrivateDirectory(path.dirname(directory));
 }
 
 async function openValidatedDirectory(directory: string, label: string) {

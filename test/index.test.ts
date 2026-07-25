@@ -9,7 +9,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
@@ -27,10 +27,12 @@ import {
 	type StashUi,
 } from "../index.ts";
 import { removeAssetDir } from "../src/assets.ts";
+import { beginAddIntent, beginRestoreIntent } from "../src/intents.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
+const DEAD_PROCESS_ID = 2_147_483_647;
 
 const directTempImages: string[] = [];
 
@@ -490,6 +492,26 @@ test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 });
 
+test("asset cleanup retries after removal succeeds but acknowledgement fails", async () => {
+	const paths = resolveStashPaths("/cleanup-acknowledgement", baseDir);
+	const seed = await loadStashStore(paths);
+	const entry = await seed.add({ text: "removed", assetCount: 1 });
+	mkdirSync(paths.assetDir(entry.id), { recursive: true });
+	writeFileSync(path.join(paths.assetDir(entry.id), "00-image.png"), "image");
+	await seed.drop(entry.id);
+	const failing = await loadStashStore(paths, Date.now, async () => {
+		throw new Error("acknowledgement failed");
+	});
+
+	await drainAssetCleanup(fakeUi(), failing, paths);
+
+	assert.equal(existsSync(paths.assetDir(entry.id)), false);
+	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, [entry.id]);
+	const recovered = await loadStashStore(paths);
+	await drainAssetCleanup(fakeUi(), recovered, paths);
+	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
+});
+
 test("doClear respects a confirmed dialog and wipes everything", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -704,6 +726,44 @@ test("session startup reports a legacy migration conflict and stays inactive", a
 			),
 		);
 		assert.equal(ui.widgets.has("pi-stash"), false);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("session startup reconciles interrupted add and restore mutations", async () => {
+	const { pi, handlers } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = path.join(baseDir, "configured-agent");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	try {
+		const cwd = "/intent-recovery";
+		const paths = resolveStashPaths(cwd, path.join(agentDir, "pi-stash"));
+		const store = await loadStashStore(paths);
+		const restored = await store.add({ text: "restore me" });
+		const deadOwner = {
+			pid: DEAD_PROCESS_ID,
+			host: hostname(),
+			startedAt: Date.now(),
+			token: "dead-session",
+		};
+		await beginRestoreIntent(paths, restored, deadOwner);
+		await store.pop(restored.id);
+		const abandonedId = "abandoned-add";
+		await beginAddIntent(paths, abandonedId, deadOwner);
+		mkdirSync(paths.assetDir(abandonedId), { recursive: true });
+		writeFileSync(path.join(paths.assetDir(abandonedId), "00-image.png"), "image");
+
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
+		const ui = fakeUi();
+		const ctx = { cwd, mode: "tui", hasUI: true, ui };
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		assert.equal((await loadStashStore(paths)).entries[0]?.text, "restore me");
+		assert.equal(existsSync(paths.assetDir(abandonedId)), false);
+		assert.ok(ui.notifs.some((notification) => notification.message.includes("Recovered")));
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

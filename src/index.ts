@@ -19,6 +19,13 @@ import path from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 
 import { persistTmpImages, removeAssetDir } from "./assets.ts";
+import {
+	beginAddIntent,
+	beginRestoreIntent,
+	completeIntent,
+	type MutationIntent,
+	reconcileMutationIntents,
+} from "./intents.ts";
 import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
 import { defaultStashBaseDir, resolveStashPaths } from "./paths.ts";
@@ -37,6 +44,9 @@ const ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE =
 	"Stashed draft, but failed to remove older persisted images";
 const LOCK_RELEASE_FAILED_MESSAGE = "failed to release storage lock";
 const ROLLBACK_FAILED_MESSAGE = "stash persistence and staged-asset rollback both failed";
+const INTENT_ROLLBACK_FAILED_MESSAGE = "stash operation and recovery-intent rollback both failed";
+const INTENT_FINALIZE_FAILED_MESSAGE = "failed to finalize crash-recovery intent";
+const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
 
 // Narrow UI surface the orchestration needs. The real ExtensionContext.ui
 // satisfies this structurally; tests pass a minimal fake.
@@ -87,6 +97,17 @@ function committedMutation<Result>(error: unknown): CommittedMutationError<Resul
 	return error instanceof CommittedMutationError ? error : undefined;
 }
 
+async function completeIntentOrAggregate(
+	intent: MutationIntent,
+	operationError: unknown,
+): Promise<void> {
+	try {
+		await completeIntent(intent);
+	} catch (intentError) {
+		throw new AggregateError([operationError, intentError], INTENT_ROLLBACK_FAILED_MESSAGE);
+	}
+}
+
 export async function drainAssetCleanup(
 	ui: StashUi,
 	store: StashStore,
@@ -126,34 +147,52 @@ export async function doStash(
 
 	const id = createNewId();
 	const assetDir = paths.assetDir(id);
-	const {
-		text: persistedText,
-		count,
-		transferredAssetDirs,
-	} = await persistTmpImages({
-		text,
-		assetDir,
-		ownedAssetsRoot: paths.assetsRoot,
-	});
+	const intent = await beginAddIntent(paths, id);
+	let staged: Awaited<ReturnType<typeof persistTmpImages>>;
+	try {
+		staged = await persistTmpImages({
+			text,
+			assetDir,
+			ownedAssetsRoot: paths.assetsRoot,
+		});
+	} catch (error) {
+		await completeIntentOrAggregate(intent, error);
+		throw error;
+	}
 	let lockReleaseFailed = false;
 	try {
 		await store.add({
 			id,
-			text: persistedText,
+			text: staged.text,
 			message,
-			assetCount: count > 0 ? count : undefined,
-			cleanupIds: transferredAssetDirs.map((directory) => path.basename(directory)),
+			assetCount: staged.count > 0 ? staged.count : undefined,
+			cleanupIds: staged.transferredAssetDirs.map((directory) => path.basename(directory)),
 		});
 	} catch (error) {
 		if (committedMutation(error)) lockReleaseFailed = true;
 		else {
+			const rollbackErrors: unknown[] = [error];
 			try {
 				await remove(assetDir);
 			} catch (rollbackError) {
-				throw new AggregateError([error, rollbackError], ROLLBACK_FAILED_MESSAGE);
+				rollbackErrors.push(rollbackError);
+			}
+			try {
+				await completeIntent(intent);
+			} catch (intentError) {
+				rollbackErrors.push(intentError);
+			}
+			if (rollbackErrors.length > 1) {
+				throw new AggregateError(rollbackErrors, ROLLBACK_FAILED_MESSAGE);
 			}
 			throw error;
 		}
+	}
+	let intentFinalizeFailed = false;
+	try {
+		await completeIntent(intent);
+	} catch {
+		intentFinalizeFailed = true;
 	}
 	if (ui.getEditorText() === text) ui.setEditorText("");
 	if (!lockReleaseFailed) {
@@ -161,10 +200,15 @@ export async function doStash(
 	}
 	refreshWidget(ui, store);
 	const successMessage =
-		count > 0 ? `Stashed [0] · ${count} image${count > 1 ? "s" : ""} persisted` : "Stashed [0]";
+		staged.count > 0
+			? `Stashed [0] · ${staged.count} image${staged.count > 1 ? "s" : ""} persisted`
+			: "Stashed [0]";
+	const failure = lockReleaseFailed ? LOCK_RELEASE_FAILED_MESSAGE : undefined;
+	const reportedFailure =
+		failure ?? (intentFinalizeFailed ? INTENT_FINALIZE_FAILED_MESSAGE : undefined);
 	ui.notify(
-		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
-		lockReleaseFailed ? "error" : "info",
+		reportedFailure ? `${successMessage}, but ${reportedFailure}` : successMessage,
+		reportedFailure ? "error" : "info",
 	);
 }
 
@@ -223,7 +267,7 @@ export async function openOverlay(
 	);
 
 	if (!chosen) return;
-	await restoreEntry(session.ui, store, chosen.id, "Stash entry vanished before restore");
+	await restoreEntry(session.ui, store, paths, chosen.id, "Stash entry vanished before restore");
 }
 
 // Compact cwd label for the overlay header: collapse $HOME to ~ and tail the
@@ -245,22 +289,23 @@ function editorIsReadyForRestore(ui: StashUi): boolean {
 async function restoreEntry(
 	ui: StashUi,
 	store: StashStore,
+	paths: ReturnType<typeof resolveStashPaths>,
 	selector: string | undefined,
 	missingMessage: string,
 ): Promise<void> {
 	let editorBlocked = false;
 	let restoredText: string | undefined;
+	let intent: MutationIntent | undefined;
 	const priorText = ui.getEditorText();
 	let resolved: ResolvedEntry | undefined;
 	let lockReleaseFailed = false;
 	try {
-		resolved = await store.pop(selector, (candidate) => {
+		resolved = await store.pop(selector, async (candidate) => {
 			if (!editorIsReadyForRestore(ui)) {
 				editorBlocked = true;
 				return false;
 			}
-			// This callback runs synchronously inside the store lock after its fresh
-			// read, leaving no await where new typing could be overwritten.
+			intent = await beginRestoreIntent(paths, candidate.entry);
 			restoredText = candidate.entry.text;
 			ui.setEditorText(restoredText);
 			return true;
@@ -271,11 +316,10 @@ async function restoreEntry(
 			resolved = committed.result;
 			lockReleaseFailed = true;
 		} else {
-			// The editor is not transactional. Roll it back only when the user has not
-			// typed since the candidate was shown while the durable write was pending.
 			if (restoredText !== undefined && ui.getEditorText() === restoredText) {
 				ui.setEditorText(priorText);
 			}
+			if (intent) await completeIntentOrAggregate(intent, error);
 			throw error;
 		}
 	}
@@ -284,24 +328,35 @@ async function restoreEntry(
 		ui.notify(missingMessage, "warning");
 		return;
 	}
+	let intentFinalizeFailed = false;
+	if (intent) {
+		try {
+			await completeIntent(intent);
+		} catch {
+			intentFinalizeFailed = true;
+		}
+	}
 	refreshWidget(ui, store);
-	// Assets are intentionally kept: the restored text references them.
 	const successMessage = `Restored [${resolved.index}]`;
+	const failure = lockReleaseFailed ? LOCK_RELEASE_FAILED_MESSAGE : undefined;
+	const reportedFailure =
+		failure ?? (intentFinalizeFailed ? INTENT_FINALIZE_FAILED_MESSAGE : undefined);
 	ui.notify(
-		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
-		lockReleaseFailed ? "error" : "info",
+		reportedFailure ? `${successMessage}, but ${reportedFailure}` : successMessage,
+		reportedFailure ? "error" : "info",
 	);
 }
 
 export async function doPop(
 	ui: StashUi,
 	store: StashStore,
-	_paths: ReturnType<typeof resolveStashPaths>,
+	paths: ReturnType<typeof resolveStashPaths>,
 	selector?: string,
 ): Promise<void> {
 	await restoreEntry(
 		ui,
 		store,
+		paths,
 		selector,
 		selector ? `No stash entry matching "${selector}"` : "No stashed drafts",
 	);
@@ -534,7 +589,18 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			ctx.ui.notify(`pi-stash unavailable: ${reason}`, "error");
 			return;
 		}
-		const store = await loadStashStore(paths);
+		let store: StashStore;
+		try {
+			store = await loadStashStore(paths);
+			const reconciliation = await reconcileMutationIntents(paths, store);
+			if (reconciliation.recoveredRestores > 0) {
+				ctx.ui.notify(RESTORE_RECOVERED_MESSAGE, "warning");
+			}
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : "unknown recovery failure";
+			ctx.ui.notify(`pi-stash unavailable: ${reason}`, "error");
+			return;
+		}
 		await drainAssetCleanup(ctx.ui as StashUi, store, paths);
 		refreshWidget(ctx.ui as StashUi, store);
 

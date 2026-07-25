@@ -22,6 +22,7 @@ import {
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
+	syncPrivateDirectory,
 	writePrivateTextFileExclusive,
 } from "./private-fs.ts";
 import {
@@ -46,6 +47,7 @@ const LOCK_RECLAIM_SUFFIX = ".reclaim";
 const ACTIVE_CLEANUP_MESSAGE = "active stash id queued for cleanup";
 const DUPLICATE_STASH_ID_MESSAGE = "duplicate stash id";
 const INVALID_ASSET_COUNT_MESSAGE = "invalid asset count";
+const INVALID_CREATED_AT_MESSAGE = "invalid stash creation time";
 const PENDING_STASH_ID_MESSAGE = "stash id pending asset cleanup";
 const COMMITTED_MUTATION_ERROR_MESSAGE = "stash mutation committed but lock release failed";
 const MUTATION_AND_UNLOCK_ERROR_MESSAGE = "stash mutation and lock release both failed";
@@ -66,6 +68,8 @@ export type AddEntryInput = {
 	/** Caller-supplied id; generated when omitted. Lets a caller stage image
 	 * assets into assetDir(id) before the entry is persisted. */
 	id?: string;
+	/** Original timestamp used only when crash reconciliation restores an entry. */
+	createdAt?: number;
 };
 
 export type LoadResult =
@@ -73,7 +77,12 @@ export type LoadResult =
 	| { kind: "corrupt"; quarantinedTo?: string }
 	| { kind: "unsupported"; schemaVersion: number };
 
-export type StashWriter = (filePath: string, file: StashFile) => Promise<void>;
+export type StashWriteOutcome = {
+	committed: true;
+	cleanupError: unknown;
+};
+
+export type StashWriter = (filePath: string, file: StashFile) => Promise<void | StashWriteOutcome>;
 
 export class CommittedMutationError<Result> extends Error {
 	readonly committed = true;
@@ -129,6 +138,7 @@ export class StashStore {
 		const id = input.id ?? createNewId();
 		assertSafeEntryId(id);
 		assertSafeAssetCount(input.assetCount);
+		assertSafeCreatedAt(input.createdAt);
 		const cleanupIds = [...(input.cleanupIds ?? [])];
 		for (const cleanupId of cleanupIds) assertSafeEntryId(cleanupId);
 		return withStashMutationLock(this.stashFile, async () => {
@@ -138,7 +148,7 @@ export class StashStore {
 			const entry: StashEntry = {
 				id,
 				text: input.text,
-				createdAt: this.now(),
+				createdAt: input.createdAt ?? this.now(),
 			};
 			if (input.message !== undefined && input.message.trim().length > 0) {
 				entry.message = input.message.trim();
@@ -152,15 +162,13 @@ export class StashStore {
 				entries: [entry, ...this.file.entries],
 				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, cleanupIds),
 			};
-			await this.write(this.stashFile, nextFile);
-			this.file = nextFile;
-			return entry;
+			return this.persistMutation(nextFile, entry);
 		});
 	}
 
 	async pop(
 		selector: string | undefined,
-		beforeRemove?: (resolved: ResolvedEntry) => boolean,
+		beforeRemove?: (resolved: ResolvedEntry) => boolean | Promise<boolean>,
 	): Promise<ResolvedEntry | undefined> {
 		return this.remove(selector, false, beforeRemove);
 	}
@@ -180,8 +188,7 @@ export class StashStore {
 				updatedAt: this.now(),
 				pendingAssetCleanup: this.file.pendingAssetCleanup.filter((cleanupId) => cleanupId !== id),
 			};
-			await this.write(this.stashFile, nextFile);
-			this.file = nextFile;
+			await this.persistMutation(nextFile, undefined);
 		});
 	}
 
@@ -195,22 +202,20 @@ export class StashStore {
 				updatedAt: this.now(),
 				pendingAssetCleanup: mergeCleanupIds(this.file.pendingAssetCleanup, removedIds),
 			};
-			await this.write(this.stashFile, nextFile);
-			this.file = nextFile;
-			return removedIds;
+			return this.persistMutation(nextFile, removedIds);
 		});
 	}
 
 	private async remove(
 		selector: string | undefined,
 		queueAssetCleanup: boolean,
-		beforeRemove?: (resolved: ResolvedEntry) => boolean,
+		beforeRemove?: (resolved: ResolvedEntry) => boolean | Promise<boolean>,
 	): Promise<ResolvedEntry | undefined> {
 		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
 			const resolved = resolveBySelector(this.file.entries, selector);
-			if (!resolved || (beforeRemove && !beforeRemove(resolved))) return undefined;
+			if (!resolved || (beforeRemove && !(await beforeRemove(resolved)))) return undefined;
 			const nextFile = {
 				...this.file,
 				updatedAt: this.now(),
@@ -219,10 +224,17 @@ export class StashStore {
 					? mergeCleanupIds(this.file.pendingAssetCleanup, [resolved.entry.id])
 					: this.file.pendingAssetCleanup,
 			};
-			await this.write(this.stashFile, nextFile);
-			this.file = nextFile;
-			return resolved;
+			return this.persistMutation(nextFile, resolved);
 		});
+	}
+
+	private async persistMutation<Result>(nextFile: StashFile, result: Result): Promise<Result> {
+		const outcome = await this.write(this.stashFile, nextFile);
+		this.file = nextFile;
+		if (outcome?.committed) {
+			throw new CommittedMutationError(result, outcome.cleanupError);
+		}
+		return result;
 	}
 
 	private async reloadFresh(): Promise<void> {
@@ -275,6 +287,12 @@ function assertSafeAssetCount(value: number | undefined): void {
 	}
 }
 
+function assertSafeCreatedAt(value: number | undefined): void {
+	if (value !== undefined && (!Number.isFinite(value) || Number.isNaN(new Date(value).getTime()))) {
+		throw new Error(INVALID_CREATED_AT_MESSAGE);
+	}
+}
+
 function mergeCleanupIds(current: readonly string[], added: readonly string[]): string[] {
 	return [...new Set([...current, ...added])];
 }
@@ -306,7 +324,8 @@ async function readCurrentStashFile(
 ): Promise<LoadResult> {
 	const loaded = await readStashFile(filePath, cwdKey, now);
 	if (loaded.kind !== "ready" || loaded.migratedFrom === undefined) return loaded;
-	await write(filePath, loaded.file);
+	const outcome = await write(filePath, loaded.file);
+	if (outcome?.committed) throw outcome.cleanupError;
 	return { kind: "ready", file: loaded.file };
 }
 
@@ -357,7 +376,11 @@ async function quarantineCorrupt(
 	return { kind: "corrupt", quarantinedTo };
 }
 
-async function writeStashFile(filePath: string, file: StashFile): Promise<void> {
+export async function writeStashFile(
+	filePath: string,
+	file: StashFile,
+	syncDirectory: typeof syncPrivateDirectory = syncPrivateDirectory,
+): Promise<void | StashWriteOutcome> {
 	await ensurePrivateDirectory(path.dirname(filePath));
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
 	const data = `${JSON.stringify(file, null, 2)}\n`;
@@ -366,9 +389,15 @@ async function writeStashFile(filePath: string, file: StashFile): Promise<void> 
 		await writePrivateTextFileExclusive(tempPath, data);
 		tempCreated = true;
 		await rename(tempPath, filePath);
+		tempCreated = false;
 	} catch (error) {
 		if (tempCreated) await rm(tempPath, { force: true });
 		throw error;
+	}
+	try {
+		await syncDirectory(path.dirname(filePath));
+	} catch (cleanupError) {
+		return { committed: true, cleanupError };
 	}
 }
 
@@ -394,6 +423,15 @@ async function withStashLock<Result>(
 		try {
 			await releaseStashLock(lockPath, token);
 		} catch (cleanupError) {
+			if (operationError instanceof CommittedMutationError) {
+				throw new CommittedMutationError(
+					operationError.result,
+					new AggregateError(
+						[operationError.cleanupError, cleanupError],
+						MUTATION_AND_UNLOCK_ERROR_MESSAGE,
+					),
+				);
+			}
 			throw new AggregateError([operationError, cleanupError], MUTATION_AND_UNLOCK_ERROR_MESSAGE);
 		}
 		throw operationError;

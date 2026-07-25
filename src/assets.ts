@@ -14,6 +14,7 @@ import {
 	ensurePrivateDirectory,
 	PRIVATE_FILE_MODE,
 	removePrivateDirectory,
+	syncPrivateDirectory,
 } from "./private-fs.ts";
 import { isSafeEntryId } from "./types.ts";
 
@@ -145,6 +146,8 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 		for (const copy of copiesByDigest.values()) {
 			await writePrivateImage(copy.destination, copy.bytes);
 		}
+		await syncPrivateDirectory(input.assetDir, "asset directory");
+		await syncPrivateDirectory(path.dirname(input.assetDir));
 	} catch (error) {
 		try {
 			await removePrivateDirectory(input.assetDir);
@@ -360,6 +363,7 @@ async function writePrivateImage(destination: string, bytes: Buffer): Promise<vo
 	try {
 		await handle.writeFile(bytes);
 		await handle.chmod(PRIVATE_FILE_MODE);
+		await handle.sync();
 		succeeded = true;
 	} finally {
 		await handle.close();

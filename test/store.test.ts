@@ -17,7 +17,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { resolveStashPaths } from "../src/paths.ts";
-import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
+import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/store.ts";
 
 const CURRENT_SCHEMA_VERSION = 2;
 const DEAD_PROCESS_ID = 2_147_483_647;
@@ -287,6 +287,46 @@ test("add reports its committed result when lock release fails", async () => {
 	assert.equal(reopened.entries[0]?.text, "committed");
 });
 
+test("add reports a committed result when directory sync fails after rename", async () => {
+	const paths = resolveStashPaths("/committed-sync-failure", baseDir);
+	const store = await loadStashStore(paths, clock, (filePath, file) =>
+		writeStashFile(filePath, file, async () => {
+			throw new Error("directory sync failed");
+		}),
+	);
+	let resultId: string | undefined;
+
+	await assert.rejects(
+		() => store.add({ text: "durably uncertain" }),
+		(error: unknown) => {
+			const committed = error as { committed?: boolean; result?: { id?: string } };
+			resultId = committed.result?.id;
+			return (
+				committed.committed === true &&
+				typeof resultId === "string" &&
+				String(error).includes("committed")
+			);
+		},
+	);
+
+	assert.equal(store.entryCount, 1);
+	const reopened = await loadStashStore(paths, clock);
+	assert.equal(reopened.entryCount, 1);
+	assert.equal(reopened.entries[0]?.id, resultId);
+});
+
+test("add keeps memory and disk unchanged when its write fails", async () => {
+	const paths = resolveStashPaths("/failed-add", baseDir);
+	const store = await loadStashStore(paths, clock, async () => {
+		throw new Error("write failed");
+	});
+
+	await assert.rejects(() => store.add({ text: "not committed" }), /write failed/);
+
+	assert.equal(store.entryCount, 0);
+	assert.equal((await loadStashStore(paths, clock)).entryCount, 0);
+});
+
 test("add preserves mutation and unlock errors when both fail", async () => {
 	const paths = resolveStashPaths("/double-failure", baseDir);
 	const store = await loadStashStore(paths, clock, async () => {
@@ -361,6 +401,20 @@ test("clear empties the store and returns removed ids", async () => {
 	assert.equal(ids.length, 2);
 	assert.equal(store.entryCount, 0);
 	assert.deepEqual(new Set(store.pendingAssetCleanupIds), new Set(ids));
+});
+
+test("clear keeps memory and disk unchanged when its write fails", async () => {
+	const paths = resolveStashPaths("/failed-clear", baseDir);
+	const seed = await loadStashStore(paths, clock);
+	await seed.add({ text: "preserved" });
+	const store = await loadStashStore(paths, clock, async () => {
+		throw new Error("write failed");
+	});
+
+	await assert.rejects(() => store.clear(), /write failed/);
+
+	assert.equal(store.entries[0]?.text, "preserved");
+	assert.equal((await loadStashStore(paths, clock)).entries[0]?.text, "preserved");
 });
 
 test("clear reloads entries added by another store before returning asset ids", async () => {
