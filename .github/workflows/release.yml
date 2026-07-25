@@ -80,7 +80,7 @@ jobs:
           install_root="$RUNNER_TEMP/pi-stash-package"
           npm install --ignore-scripts --prefix "$install_root" "$package"
           cd "$install_root"
-          NODE_NO_WARNINGS=1 node --experimental-transform-types --input-type=module -e '
+          node --input-type=module -e '
             const api = await import("@sagmans/pi-stash");
             if (typeof api.default !== "function" || Object.keys(api).join() !== "default") process.exit(1);
           '

@@ -108,25 +108,28 @@ export type RestoredAssetCleanup = {
 
 export class CommittedMutationError<Result> extends Error {
 	readonly committed = true;
+	readonly result: Result;
+	readonly cleanupError: unknown;
 
-	constructor(
-		readonly result: Result,
-		readonly cleanupError: unknown,
-	) {
+	constructor(result: Result, cleanupError: unknown) {
 		super(COMMITTED_MUTATION_ERROR_MESSAGE, { cause: cleanupError });
 		this.name = "CommittedMutationError";
+		this.result = result;
+		this.cleanupError = cleanupError;
 	}
 }
 
 export class UnsupportedStashSchemaError extends Error {
-	constructor(
-		readonly detectedVersion: number,
-		readonly supportedVersion = STASH_SCHEMA_VERSION,
-	) {
+	readonly detectedVersion: number;
+	readonly supportedVersion: number;
+
+	constructor(detectedVersion: number, supportedVersion = STASH_SCHEMA_VERSION) {
 		super(
 			`pi-stash unavailable: stash data uses schema version ${detectedVersion}; this extension supports schema versions through ${supportedVersion}. ${UNSUPPORTED_SCHEMA_GUIDANCE}`,
 		);
 		this.name = "UnsupportedStashSchemaError";
+		this.detectedVersion = detectedVersion;
+		this.supportedVersion = supportedVersion;
 	}
 }
 
@@ -134,16 +137,22 @@ export class StashStore {
 	private file: StashFile;
 	private corruptRecoveryPath: string | undefined;
 	private readonly stashFile: string;
+	private readonly paths: StashPaths;
+	private readonly now: Clock;
+	private readonly write: StashWriter;
 
 	constructor(
-		private readonly paths: StashPaths,
+		paths: StashPaths,
 		loaded: LoadResult,
-		private readonly now: Clock = Date.now,
-		private readonly write: StashWriter = writeStashFile,
+		now: Clock = Date.now,
+		write: StashWriter = writeStashFile,
 	) {
 		if (loaded.kind === "unsupported") {
 			throw new UnsupportedStashSchemaError(loaded.schemaVersion);
 		}
+		this.paths = paths;
+		this.now = now;
+		this.write = write;
 		this.file =
 			loaded.kind === "ready" ? loaded.file : createEmptyStashFile(paths.sanitized, now());
 		this.corruptRecoveryPath = loaded.kind === "corrupt" ? loaded.quarantinedTo : undefined;

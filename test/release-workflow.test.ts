@@ -35,6 +35,7 @@ test("release verifies one immutable package across every supported matrix leg",
 	assert.match(verifyJob, /npm run verify:ci/);
 	assert.match(verifyJob, /npm install --ignore-scripts --prefix "\$install_root" "\$package"/);
 	assert.doesNotMatch(verifyJob, /continue-on-error:/);
+	assert.doesNotMatch(verifyJob, /NODE_NO_WARNINGS|--experimental-transform-types/);
 });
 
 test("publication cannot bypass the complete matrix or rebuild its artifact", () => {

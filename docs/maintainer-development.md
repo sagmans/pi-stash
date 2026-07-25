@@ -5,7 +5,9 @@ requests and feature requests are not accepted — see the
 [participation policy](../CONTRIBUTING.md).
 For behavior and install, see [`README.md`](../README.md).
 
-Requires Node.js >= 22.19.0 (tests use `node --experimental-transform-types`).
+Requires Node.js >= 22.19.0. Tests use Node's native type stripping, and
+TypeScript's `erasableSyntaxOnly` check prevents syntax that would require an
+experimental transform.
 
 ```bash
 npm ci --ignore-scripts
@@ -14,7 +16,7 @@ npm run check:fix   # apply biome fixes
 npm run typecheck
 npm run test
 npm run verify       # deterministic offline checks
-npm run audit        # network-dependent high-severity dependency gate
+npm run audit        # network-dependent moderate-and-higher dependency gate
 npm run verify:ci    # complete maintainer and CI gate
 npm run smoke:herdr  # packaged two-launch real-TUI smoke; Herdr maintainers only
 npm run smoke:herdr -- /path/to/package.tgz  # smoke an exact CI artifact
@@ -32,8 +34,9 @@ workflow. The Herdr smoke remains outside hosted CI; download its
 host for exact-artifact evidence. See
 [maintainer smoke test](maintainer-smoke.md).
 
-The audit currently reports moderate `GHSA-j3f2-48v5-ccww` in the dev-only
-`protobufjs` copy nested under pi; reassess it with every pi dependency update.
+Do not hide audit output or weaken its severity threshold. Upstream findings in
+the Pi development dependency still require a verified fixed Pi pin or the
+release owner's narrow SHA-bound waiver under the release policy.
 
 Two Biome rules are disabled in `biome.json` to keep the development template
 aligned with pi-history. pi-stash does not currently rely on either exception;

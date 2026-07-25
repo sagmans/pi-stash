@@ -138,15 +138,14 @@ export function detailBody(item: IndexedEntry, theme: OverlayTheme): string[] {
 
 class DraftPreviewComponent implements Component {
 	private readonly content: Text;
+	private readonly theme: OverlayTheme;
 	private offset = 0;
 	private lineCount = 0;
 	private pinnedToEnd = false;
 
-	constructor(
-		content: string,
-		private readonly theme: OverlayTheme,
-	) {
+	constructor(content: string, theme: OverlayTheme) {
 		this.content = new Text(content, 1, 0);
+		this.theme = theme;
 	}
 
 	scroll(lines: number): void {
