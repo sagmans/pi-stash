@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -298,6 +299,29 @@ test("persisted image bytes do not depend on the later temporary source", async 
 	rmSync(image);
 
 	assert.deepEqual(readFileSync(persisted), PNG_BYTES);
+});
+
+test("persistTmpImages copies from one opened descriptor during pathname replacement", async () => {
+	const image = clipboardImage();
+	const original = `${image}.original`;
+	const replacement = Buffer.from("replacement");
+	const assetDir = path.join(scratch, "assets", "source-race");
+	let sourceOpened = false;
+
+	const result = await persistTmpImages({
+		text: image,
+		assetDir,
+		tmpDir: tmpRoot,
+		onSourceOpened: (source) => {
+			sourceOpened = true;
+			renameSync(source, original);
+			writeFileSync(source, replacement);
+		},
+	});
+
+	assert.equal(sourceOpened, true);
+	assert.deepEqual(readFileSync(result.text), PNG_BYTES);
+	assert.deepEqual(readFileSync(image), replacement);
 });
 
 test("persistTmpImages removes every staged copy when a later write fails", async () => {

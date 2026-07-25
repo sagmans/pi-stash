@@ -70,6 +70,8 @@ type PersistInput = {
 	tmpDir?: string;
 	ownedAssetsRoot?: string;
 	limits?: Partial<ImageLimits>;
+	/** Test/diagnostic seam for proving reads stay bound to the opened source inode. */
+	onSourceOpened?: (source: string) => void | Promise<void>;
 };
 
 export type PersistResult = {
@@ -108,7 +110,13 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 	for (const reference of references) {
 		let loaded = loadedBySource.get(reference.source);
 		if (!loaded) {
-			loaded = await loadImage(reference, tmpRoot, input.ownedAssetsRoot, limits.maxImageBytes);
+			loaded = await loadImage(
+				reference,
+				tmpRoot,
+				input.ownedAssetsRoot,
+				limits.maxImageBytes,
+				input.onSourceOpened,
+			);
 			loadedBySource.set(reference.source, loaded);
 		}
 		let copy = copiesByDigest.get(loaded.digest);
@@ -218,6 +226,7 @@ async function loadImage(
 	tmpRoot: string,
 	ownedAssetsRoot: string | undefined,
 	maxBytes: number,
+	onSourceOpened: PersistInput["onSourceOpened"],
 ): Promise<LoadedImage> {
 	const before = await lstat(reference.source);
 	assertSafeSource(before, "image source");
@@ -231,6 +240,7 @@ async function loadImage(
 		if (opened.dev !== before.dev || opened.ino !== before.ino) {
 			throw new Error("image source changed during validation");
 		}
+		await onSourceOpened?.(reference.source);
 		const bytes = await readBounded(handle, maxBytes);
 		assertImageBytes(reference.source, bytes);
 		return {
