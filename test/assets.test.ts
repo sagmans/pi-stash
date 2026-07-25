@@ -4,8 +4,11 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
+	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -161,10 +164,50 @@ test("persistTmpImages repairs existing asset directory permissions", async () =
 	assert.equal(statSync(assetDir).mode & 0o777, 0o700);
 });
 
+test("persistTmpImages rejects a symbolic-link asset root", async () => {
+	const image = tmpImage("private.png");
+	const target = path.join(scratch, "asset-target");
+	const assetsRoot = path.join(scratch, "linked-assets");
+	mkdirSync(target);
+	symlinkSync(target, assetsRoot, "dir");
+
+	await assert.rejects(
+		() =>
+			persistTmpImages({
+				text: image,
+				assetDir: path.join(assetsRoot, "entry-6"),
+				tmpDir: tmpRoot,
+			}),
+		/storage directory.*symbolic link/,
+	);
+	assert.deepEqual(readdirSync(target), []);
+});
+
 test("removeAssetDir deletes the directory", async () => {
 	const assetDir = path.join(scratch, "assets", "entry-5");
 	mkdirSync(assetDir, { recursive: true });
 	writeFileSync(path.join(assetDir, "00-x.png"), "x");
 	await removeAssetDir(assetDir);
 	assert.equal(existsSync(assetDir), false);
+});
+
+test("removeAssetDir rejects a symbolic link without touching its target", async () => {
+	const target = path.join(scratch, "remove-target");
+	const marker = path.join(target, "marker");
+	const linkedAssetDir = path.join(scratch, "linked-entry");
+	mkdirSync(target);
+	writeFileSync(marker, "keep");
+	symlinkSync(target, linkedAssetDir, "dir");
+
+	await assert.rejects(() => removeAssetDir(linkedAssetDir), /asset directory.*symbolic link/);
+	assert.equal(readFileSync(marker, "utf8"), "keep");
+	assert.equal(existsSync(linkedAssetDir), true);
+});
+
+test("removeAssetDir rejects an unexpected file type", async () => {
+	const assetDir = path.join(scratch, "not-a-directory");
+	writeFileSync(assetDir, "keep");
+
+	await assert.rejects(() => removeAssetDir(assetDir), /asset directory.*directory/);
+	assert.equal(readFileSync(assetDir, "utf8"), "keep");
 });

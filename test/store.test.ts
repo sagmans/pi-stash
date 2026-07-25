@@ -1,11 +1,14 @@
 import { strict as assert } from "node:assert";
 import {
+	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -22,6 +25,7 @@ const FRACTIONAL_ASSET_COUNT = 0.5;
 const FUTURE_SCHEMA_VERSION = STASH_SCHEMA_VERSION + 1;
 const LEGACY_ENTRY_ID = "legacy-entry";
 const LEGACY_SCHEMA_VERSION = 1;
+const QUARANTINE_TIMESTAMP = 12_345;
 const STALE_LOCK_AGE_MS = 31_000;
 const TEST_LOCK_TOKEN = "test-lock-owner";
 
@@ -67,6 +71,103 @@ test("loads empty when no stash file exists", async () => {
 	const store = await storeFor();
 	assert.equal(store.entryCount, 0);
 	assert.deepEqual([...store.entries], []);
+});
+
+test("rejects a symbolic-link storage root without touching its target", async () => {
+	const target = path.join(baseDir, "target");
+	const linkedRoot = path.join(baseDir, "linked-root");
+	mkdirSync(target);
+	symlinkSync(target, linkedRoot, "dir");
+	const paths = resolveStashPaths("/linked-root", linkedRoot);
+
+	await assert.rejects(() => loadStashStore(paths, clock), /storage directory.*symbolic link/);
+	assert.deepEqual(readdirSync(target), []);
+});
+
+test("rejects a stash-file symbolic link without changing its target", async () => {
+	const paths = resolveStashPaths("/linked-file", baseDir);
+	const target = path.join(baseDir, "target.json");
+	const targetText = JSON.stringify({
+		schemaVersion: STASH_SCHEMA_VERSION,
+		cwd: paths.sanitized,
+		createdAt: 1,
+		updatedAt: 1,
+		entries: [],
+		pendingAssetCleanup: [],
+	});
+	writeFileSync(target, targetText);
+	symlinkSync(target, paths.stashFile);
+
+	await assert.rejects(() => loadStashStore(paths, clock), /stash file.*symbolic link/);
+	assert.equal(readFileSync(target, "utf8"), targetText);
+});
+
+test("rejects an unexpected stash-file type", async () => {
+	const paths = resolveStashPaths("/directory-file", baseDir);
+	mkdirSync(paths.stashFile);
+
+	await assert.rejects(() => loadStashStore(paths, clock), /stash file.*regular file/);
+	assert.equal(statSync(paths.stashFile).isDirectory(), true);
+});
+
+test("rejects a storage root not owned by the current user", {
+	skip: !process.getuid,
+}, async (t) => {
+	const currentUid = process.getuid?.();
+	assert.notEqual(currentUid, undefined);
+	const processWithUid = process as typeof process & { getuid(): number };
+	t.mock.method(processWithUid, "getuid", () => (currentUid ?? 0) + 1);
+
+	await assert.rejects(() => storeFor("/foreign-owner"), /storage directory.*current user/);
+});
+
+test("repairs insecure storage-root and stash-file permissions", async () => {
+	const paths = resolveStashPaths("/repair-permissions", baseDir);
+	writeFileSync(
+		paths.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			pendingAssetCleanup: [],
+		}),
+	);
+	chmodSync(baseDir, 0o777);
+	chmodSync(paths.stashFile, 0o666);
+
+	await loadStashStore(paths, clock);
+
+	assert.equal(statSync(baseDir).mode & 0o777, 0o700);
+	assert.equal(statSync(paths.stashFile).mode & 0o777, 0o600);
+});
+
+test("quarantine preserves a colliding recovery file", async (t) => {
+	const paths = resolveStashPaths("/quarantine-collision", baseDir);
+	const collisionPath = `${paths.stashFile}.corrupt-${QUARANTINE_TIMESTAMP}`;
+	writeFileSync(paths.stashFile, "{ corrupt stash");
+	writeFileSync(collisionPath, "existing evidence");
+	t.mock.method(Date, "now", () => QUARANTINE_TIMESTAMP);
+
+	const store = await loadStashStore(paths, clock);
+
+	assert.equal(store.entryCount, 0);
+	assert.equal(readFileSync(collisionPath, "utf8"), "existing evidence");
+	assert.equal(readFileSync(`${collisionPath}-1`, "utf8"), "{ corrupt stash");
+	assert.equal(existsSync(paths.stashFile), false);
+});
+
+test("rejects a symbolic-link lock without touching its target", async () => {
+	const paths = resolveStashPaths("/linked-lock", baseDir);
+	const target = path.join(baseDir, "lock-target");
+	const marker = path.join(target, "marker");
+	mkdirSync(target);
+	writeFileSync(marker, "keep");
+	symlinkSync(target, `${paths.stashFile}.lock`, "dir");
+
+	await assert.rejects(() => loadStashStore(paths, clock), /stash lock.*symbolic link/);
+	assert.equal(readFileSync(marker, "utf8"), "keep");
 });
 
 test("add places uniquely identified entries newest-first", async () => {

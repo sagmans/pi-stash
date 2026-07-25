@@ -8,12 +8,22 @@
 // drafts. A corrupt file is quarantined rather than blindly overwritten, so a
 // hand-edit mistake never silently destroys saved stashes.
 
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { StashPaths } from "./paths.ts";
+import {
+	assertPrivateDirectory,
+	ensurePrivateDirectory,
+	PRIVATE_DIR_MODE,
+	type PrivateTextFile,
+	quarantinePrivateFile,
+	readPrivateTextFile,
+	removePrivateDirectory,
+	writePrivateTextFileExclusive,
+} from "./private-fs.ts";
 import {
 	assertSafeEntryId,
 	type Clock,
@@ -27,9 +37,6 @@ import {
 	type StashEntry,
 	type StashFile,
 } from "./types.ts";
-
-export const PRIVATE_DIR_MODE = 0o700;
-export const PRIVATE_FILE_MODE = 0o600;
 
 const LOCK_RETRY_MS = 25;
 const LOCK_TIMEOUT_MS = 2000;
@@ -287,9 +294,9 @@ async function readStashFile(
 	now: number | Clock,
 ): Promise<LoadResult> {
 	const timestamp = typeof now === "number" ? now : now();
-	let text: string;
+	let source: PrivateTextFile;
 	try {
-		text = await readFile(filePath, "utf8");
+		source = await readPrivateTextFile(filePath);
 	} catch (error) {
 		if (hasErrorCode(error, "ENOENT")) {
 			return { kind: "ready", file: createEmptyStashFile(cwdKey, timestamp) };
@@ -299,9 +306,9 @@ async function readStashFile(
 
 	let raw: unknown;
 	try {
-		raw = JSON.parse(text);
+		raw = JSON.parse(source.text);
 	} catch {
-		return await quarantineCorrupt(filePath);
+		return await quarantineCorrupt(filePath, source.identity);
 	}
 	const parsed = parseStashFile(raw);
 	if (parsed?.file.cwd === cwdKey) {
@@ -315,39 +322,32 @@ async function readStashFile(
 	) {
 		return { kind: "unsupported", schemaVersion: raw.schemaVersion };
 	}
-	return await quarantineCorrupt(filePath);
+	return await quarantineCorrupt(filePath, source.identity);
 }
 
-async function quarantineCorrupt(filePath: string): Promise<LoadResult> {
-	// Move the bad file aside so the next write starts clean without destroying
-	// what the user might want to recover manually.
-	const quarantinedTo = `${filePath}.corrupt-${Date.now()}`;
-	try {
-		await rename(filePath, quarantinedTo);
-		return { kind: "corrupt", quarantinedTo };
-	} catch {
-		// If even rename fails (permissions, vanished), fall back to empty.
-		return { kind: "corrupt" };
-	}
+async function quarantineCorrupt(
+	filePath: string,
+	identity: PrivateTextFile["identity"],
+): Promise<LoadResult> {
+	// Hard-link reservation preserves earlier evidence instead of relying on
+	// rename's platform-specific overwrite behavior.
+	const quarantinedTo = await quarantinePrivateFile(filePath, identity, `corrupt-${Date.now()}`);
+	return { kind: "corrupt", quarantinedTo };
 }
 
 async function writeStashFile(filePath: string, file: StashFile): Promise<void> {
 	await ensurePrivateDirectory(path.dirname(filePath));
 	const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
 	const data = `${JSON.stringify(file, null, 2)}\n`;
+	let tempCreated = false;
 	try {
-		await writeFile(tempPath, data, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
-		await chmod(tempPath, PRIVATE_FILE_MODE);
+		await writePrivateTextFileExclusive(tempPath, data);
+		tempCreated = true;
 		await rename(tempPath, filePath);
 	} catch (error) {
-		await rm(tempPath, { force: true });
+		if (tempCreated) await rm(tempPath, { force: true });
 		throw error;
 	}
-}
-
-async function ensurePrivateDirectory(directory: string): Promise<void> {
-	await mkdir(directory, { recursive: true, mode: PRIVATE_DIR_MODE });
-	await chmod(directory, PRIVATE_DIR_MODE);
 }
 
 async function withStashLock<Result>(
@@ -371,7 +371,7 @@ async function acquireStashLock(lockPath: string): Promise<string> {
 		try {
 			await mkdir(lockPath, { mode: PRIVATE_DIR_MODE });
 			try {
-				await chmod(lockPath, PRIVATE_DIR_MODE);
+				await ensurePrivateDirectory(lockPath, "stash lock");
 				await writeLockOwner(lockPath, token);
 			} catch (error) {
 				await rm(lockPath, { force: true, recursive: true });
@@ -380,6 +380,12 @@ async function acquireStashLock(lockPath: string): Promise<string> {
 			return token;
 		} catch (error) {
 			if (!hasErrorCode(error, "EEXIST")) throw error;
+			try {
+				await assertPrivateDirectory(lockPath, "stash lock");
+			} catch (validationError) {
+				if (hasErrorCode(validationError, "ENOENT")) continue;
+				throw validationError;
+			}
 			if (await reclaimStaleLock(lockPath)) continue;
 			if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
 				throw new Error(`timed out waiting for pi-stash lock ${lockPath}`);
@@ -397,18 +403,22 @@ async function writeLockOwner(lockPath: string, token: string): Promise<void> {
 		createdAt: new Date().toISOString(),
 	};
 	const ownerPath = path.join(lockPath, LOCK_OWNER_FILE);
-	await writeFile(ownerPath, `${JSON.stringify(owner)}\n`, {
-		encoding: "utf8",
-		mode: PRIVATE_FILE_MODE,
-	});
-	await chmod(ownerPath, PRIVATE_FILE_MODE);
+	await writePrivateTextFileExclusive(ownerPath, `${JSON.stringify(owner)}\n`);
 }
 
 async function readLockOwner(lockPath: string): Promise<LockOwner | undefined> {
+	let text: string;
 	try {
-		const value: unknown = JSON.parse(await readFile(path.join(lockPath, LOCK_OWNER_FILE), "utf8"));
-		if (!isLockOwner(value)) return undefined;
-		return value;
+		await assertPrivateDirectory(lockPath, "stash lock");
+		text = (await readPrivateTextFile(path.join(lockPath, LOCK_OWNER_FILE), "lock owner file"))
+			.text;
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return undefined;
+		throw error;
+	}
+	try {
+		const value: unknown = JSON.parse(text);
+		return isLockOwner(value) ? value : undefined;
 	} catch {
 		return undefined;
 	}
@@ -442,7 +452,7 @@ async function reclaimStaleLock(lockPath: string): Promise<boolean> {
 		// Recheck only after winning the atomic reclamation guard. Without this
 		// guard, a second reclaimer could delete a new owner's replacement lock.
 		if (!(await isStaleAbandonedLock(lockPath))) return false;
-		await rm(lockPath, { force: true, recursive: true });
+		await removePrivateDirectory(lockPath, "stash lock");
 		return true;
 	} finally {
 		await releaseStashLock(reclaimPath, reclaimToken);
@@ -454,7 +464,7 @@ async function acquireReclaimGuard(reclaimPath: string): Promise<string | undefi
 	try {
 		await mkdir(reclaimPath, { mode: PRIVATE_DIR_MODE });
 		try {
-			await chmod(reclaimPath, PRIVATE_DIR_MODE);
+			await ensurePrivateDirectory(reclaimPath, "stash lock reclamation guard");
 			await writeLockOwner(reclaimPath, token);
 		} catch (error) {
 			await rm(reclaimPath, { force: true, recursive: true });
@@ -463,17 +473,24 @@ async function acquireReclaimGuard(reclaimPath: string): Promise<string | undefi
 		return token;
 	} catch (error) {
 		if (!hasErrorCode(error, "EEXIST")) throw error;
+		await assertPrivateDirectory(reclaimPath, "stash lock reclamation guard");
 		// A crashed reclaimer must not permanently block every future writer.
 		if (await isStaleAbandonedLock(reclaimPath)) {
-			await rm(reclaimPath, { force: true, recursive: true });
+			await removePrivateDirectory(reclaimPath, "stash lock reclamation guard");
 		}
 		return undefined;
 	}
 }
 
 async function isStaleAbandonedLock(lockPath: string): Promise<boolean> {
-	const stats = await stat(lockPath).catch(() => undefined);
-	if (!stats || Date.now() - stats.mtimeMs <= LOCK_STALE_MS) return false;
+	let stats: Awaited<ReturnType<typeof assertPrivateDirectory>>;
+	try {
+		stats = await assertPrivateDirectory(lockPath, "stash lock");
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return false;
+		throw error;
+	}
+	if (Date.now() - stats.mtimeMs <= LOCK_STALE_MS) return false;
 	const owner = await readLockOwner(lockPath);
 	return !owner || (owner.host === hostname() && !isProcessAlive(owner.pid));
 }

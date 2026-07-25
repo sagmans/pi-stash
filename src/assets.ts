@@ -11,11 +11,12 @@
 // untouched: they are stable and the user wants to reference the live file at
 // restore time, not a frozen snapshot.
 
-import { chmod, copyFile, mkdir, rm, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, copyFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "./store.ts";
+import { ensurePrivateDirectory, PRIVATE_FILE_MODE, removePrivateDirectory } from "./private-fs.ts";
 import { isSafeEntryId } from "./types.ts";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
@@ -75,23 +76,21 @@ export async function persistTmpImages(input: {
 	if (staged.size === 0) {
 		// No assets to keep: leave nothing behind so an empty asset dir never
 		// accumulates across stashes.
-		await rm(input.assetDir, { force: true, recursive: true });
+		await removePrivateDirectory(input.assetDir);
 		return { text: input.text, count: 0, transferredAssetDirs: [] };
 	}
 
 	try {
-		await mkdir(input.assetDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-		// mkdir's mode does not repair pre-existing permissive directories.
-		await chmod(path.dirname(input.assetDir), PRIVATE_DIR_MODE);
-		await chmod(input.assetDir, PRIVATE_DIR_MODE);
+		await ensurePrivateDirectory(path.dirname(input.assetDir));
+		await ensurePrivateDirectory(input.assetDir);
 		for (const [source, destination] of staged) {
-			await copyFile(source, destination);
+			await copyFile(source, destination, constants.COPYFILE_EXCL);
 			await chmod(destination, PRIVATE_FILE_MODE);
 		}
 	} catch (error) {
 		// Entry ids are unique, so the entire staging directory belongs to this
 		// failed transaction and can be removed without affecting older stashes.
-		await rm(input.assetDir, { force: true, recursive: true });
+		await removePrivateDirectory(input.assetDir);
 		throw error;
 	}
 
@@ -177,5 +176,5 @@ function stageCopy(source: string, assetDir: string, index: number): string {
 }
 
 export async function removeAssetDir(assetDir: string): Promise<void> {
-	await rm(assetDir, { force: true, recursive: true });
+	await removePrivateDirectory(assetDir);
 }
