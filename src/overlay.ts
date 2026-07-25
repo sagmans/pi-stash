@@ -90,10 +90,11 @@ export function listFooter(theme: OverlayTheme): string {
 	const up = keyText("tui.select.up" as Keybinding);
 	const down = keyText("tui.select.down" as Keybinding);
 	const confirm = keyText("tui.select.confirm" as Keybinding);
+	const preview = keyText("tui.input.tab" as Keybinding);
 	const cancel = keyText("tui.select.cancel" as Keybinding);
 	return theme.fg(
 		"dim",
-		` ${up}${down} move · ${confirm} restore · →/␣ preview · / filter · ${cancel} close`,
+		` ${up}${down} move · ${confirm} restore · ${preview} preview · type to filter · ${cancel} close`,
 	);
 }
 
@@ -132,6 +133,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private items: IndexedEntry[];
 	private filtered: IndexedEntry[];
 	private selected = 0;
+	private query = "";
 	private mode: "list" | "detail" = "list";
 	private currentDetail: IndexedEntry | undefined;
 	private dropInProgress = false;
@@ -206,7 +208,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 			if (selected) this.callbacks.onRestore(selected.entry);
 		} else if (this.matches(data, "tui.select.cancel")) {
 			this.callbacks.onClose();
-		} else if (matchesKey(data, "right") || data === " ") {
+		} else if (this.matches(data, "tui.input.tab")) {
 			this.openDetail();
 		} else {
 			this.searchInput.handleInput(data);
@@ -228,14 +230,18 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	private filter(query: string): void {
-		const q = query.trim().toLowerCase();
-		this.filtered = q
+		const queryChanged = query !== this.query;
+		this.query = query;
+		const normalized = query.trim().toLowerCase();
+		this.filtered = normalized
 			? this.items.filter((it) => {
 					const hay = `${it.entry.text} ${it.entry.message ?? ""}`.toLowerCase();
-					return q.split(/\s+/).every((token) => hay.includes(token));
+					return normalized.split(/\s+/).every((token) => hay.includes(token));
 				})
 			: this.items;
-		this.selected = Math.min(this.selected, Math.max(0, this.filtered.length - 1));
+		this.selected = queryChanged
+			? 0
+			: Math.min(this.selected, Math.max(0, this.filtered.length - 1));
 	}
 
 	private openDetail(): void {

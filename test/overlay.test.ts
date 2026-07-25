@@ -3,6 +3,7 @@ import test from "node:test";
 import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 
 import {
+	defaultKeyMatcher,
 	detailBody,
 	detailFooter,
 	detailHeader,
@@ -18,6 +19,7 @@ import type { StashEntry } from "../src/types.ts";
 
 // Identity theme keeps assertions free of ANSI codes.
 const theme: OverlayTheme = { fg: (_color, text) => text, bold: (text) => text };
+const ANSI_STYLE_PATTERN = /\u001b\[[0-9;]*m/gu;
 
 function entry(id: string, text: string, opts: Partial<StashEntry> = {}): StashEntry {
 	return { id, text, createdAt: 1, ...opts };
@@ -104,11 +106,16 @@ const KEY_GLYPH: Record<string, string> = {
 	"tui.select.down": "D",
 	"tui.select.confirm": "E",
 	"tui.select.cancel": "X",
+	"tui.input.tab": "T",
 };
 const matcher: KeyMatcher = (data, action) => KEY_GLYPH[action] === data;
 
 type Calls = { restore: StashEntry[]; drop: StashEntry[]; close: number };
-function harness(entries: StashEntry[], dropResult: boolean | Promise<boolean> = true) {
+function harness(
+	entries: StashEntry[],
+	dropResult: boolean | Promise<boolean> = true,
+	keyMatcher: KeyMatcher = matcher,
+) {
 	const calls: Calls = { restore: [], drop: [], close: 0 };
 	const renders: number[] = [];
 	const overlay = new StashOverlayComponent(
@@ -124,9 +131,13 @@ function harness(entries: StashEntry[], dropResult: boolean | Promise<boolean> =
 			},
 			onClose: () => calls.close++,
 		},
-		matcher,
+		keyMatcher,
 	);
 	return { overlay, calls, renders };
+}
+
+function renderedText(overlay: StashOverlayComponent): string {
+	return overlay.render(80).join("\n").replace(ANSI_STYLE_PATTERN, "");
 }
 
 test("list: down wraps, confirm restores the selected entry", () => {
@@ -144,9 +155,9 @@ test("list: cancel closes without restoring", () => {
 	assert.equal(calls.restore.length, 0);
 });
 
-test("detail: space opens, d drops and returns to list, entry is gone", async () => {
+test("detail: configured preview key opens, d drops and returns to list, entry is gone", async () => {
 	const { overlay, calls } = harness([entry("a", "alpha"), entry("b", "beta")]);
-	overlay.handleInput(" "); // open detail on alpha
+	overlay.handleInput("T"); // open detail on alpha
 	let rendered = overlay.render(60);
 	assert.ok(
 		rendered.some((l) => l.includes("drop")),
@@ -172,7 +183,7 @@ test("detail: space opens, d drops and returns to list, entry is gone", async ()
 
 test("detail: failed drop keeps the entry visible", async () => {
 	const { overlay, calls } = harness([entry("a", "alpha")], false);
-	overlay.handleInput(" ");
+	overlay.handleInput("T");
 	overlay.handleInput("d");
 	await new Promise((resolve) => setImmediate(resolve));
 
@@ -186,7 +197,7 @@ test("cancel closes once and suppresses callbacks after pending drop settles", a
 		finishDrop = resolve;
 	});
 	const { overlay, calls, renders } = harness([entry("a", "alpha")], pendingDrop);
-	overlay.handleInput(" ");
+	overlay.handleInput("T");
 	overlay.handleInput("d");
 	const rendersBeforeCancel = renders.length;
 
@@ -207,7 +218,7 @@ test("detail: ignores every action while drop is pending", async () => {
 		finishDrop = resolve;
 	});
 	const { overlay, calls } = harness([entry("a", "alpha")], pendingDrop);
-	overlay.handleInput(" ");
+	overlay.handleInput("T");
 	overlay.handleInput("d");
 
 	overlay.handleInput("E");
@@ -223,7 +234,7 @@ test("detail: ignores every action while drop is pending", async () => {
 
 test("detail: cancel returns to list without dropping", () => {
 	const { overlay, calls } = harness([entry("a", "alpha")]);
-	overlay.handleInput(" ");
+	overlay.handleInput("T");
 	overlay.handleInput("X");
 	const rendered = overlay.render(60);
 	assert.ok(rendered.some((l) => l.includes("filter")));
@@ -238,11 +249,71 @@ test("search filters the list by text", () => {
 	assert.ok(!rendered.some((l) => l.includes("alpha")));
 });
 
-test("search with no matches shows the empty state", () => {
-	const { overlay } = harness([entry("a", "alpha")]);
+test("search with no matches shows the query and cannot restore a hidden entry", () => {
+	const { overlay, calls } = harness([entry("a", "alpha")]);
 	for (const ch of "zzz") overlay.handleInput(ch);
-	const rendered = overlay.render(60);
-	assert.ok(rendered.some((l) => l.includes("No matching")));
+	overlay.handleInput("E");
+	const rendered = renderedText(overlay);
+	assert.ok(rendered.includes("> zzz"));
+	assert.ok(rendered.includes("No matching"));
+	assert.equal(calls.restore.length, 0);
+});
+
+test("query edits support spaces, cursor movement, deletion, clearing, paste, and Unicode", () => {
+	const { overlay } = harness([entry("target", "alpha beta 日本語"), entry("other", "unrelated")]);
+	for (const ch of "alpha  beta") overlay.handleInput(ch);
+	overlay.handleInput("\u001b[1;5D");
+	overlay.handleInput("\u007f");
+	assert.ok(renderedText(overlay).includes("> alpha beta"));
+	assert.ok(renderedText(overlay).includes("alpha beta 日本語"));
+
+	overlay.handleInput("\u0005");
+	overlay.handleInput("\u0015");
+	overlay.handleInput("\u001b[200~日本\u001b[201~");
+	assert.ok(renderedText(overlay).includes("> 日本"));
+	assert.ok(renderedText(overlay).includes("alpha beta 日本語"));
+});
+
+test("every query change resets selection to the first visible result", () => {
+	const { overlay, calls } = harness([
+		entry("alpha", "match alpha"),
+		entry("beta", "other beta"),
+		entry("gamma", "match gamma"),
+	]);
+	overlay.handleInput("D");
+	for (const ch of "match") overlay.handleInput(ch);
+	overlay.handleInput("E");
+
+	assert.equal(calls.restore[0]?.id, "alpha");
+});
+
+test("duplicate labels retain identity under legacy, Kitty, and injected navigation", () => {
+	for (const [down, confirm, keyMatcher] of [
+		["\u001b[B", "\r", defaultKeyMatcher],
+		["\u001b[1;1B", "\u001b[13u", defaultKeyMatcher],
+		["D", "E", matcher],
+	] as const) {
+		const { overlay, calls } = harness(
+			[entry("first", "same label"), entry("second", "same label")],
+			true,
+			keyMatcher,
+		);
+		overlay.handleInput(down);
+		overlay.handleInput(confirm);
+		assert.equal(calls.restore[0]?.id, "second");
+	}
+});
+
+test("Kitty printable input filters and configured preview never mutates in list mode", () => {
+	const { overlay, calls } = harness([entry("alpha", "alpha"), entry("beta", "beta")]);
+	for (const codepoint of [98, 101, 116, 97]) overlay.handleInput(`\u001b[${codepoint}u`);
+	overlay.handleInput("d");
+
+	assert.ok(renderedText(overlay).includes("> betad"));
+	assert.equal(calls.drop.length, 0);
+	overlay.handleInput("\u0015");
+	overlay.handleInput("T");
+	assert.ok(renderedText(overlay).includes("preview"));
 });
 
 test("render draws a framed header and footer", () => {
