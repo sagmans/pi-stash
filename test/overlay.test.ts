@@ -112,14 +112,17 @@ const KEY_GLYPH: Record<string, string> = {
 };
 const matcher: KeyMatcher = (data, action) => KEY_GLYPH[action] === data;
 
-type Calls = { restore: StashEntry[]; drop: StashEntry[]; close: number };
+type Calls = { restore: StashEntry[]; drop: StashEntry[]; close: number; errors: unknown[] };
 function harness(
 	entries: StashEntry[],
 	dropResult: boolean | Promise<boolean> = true,
 	keyMatcher: KeyMatcher = matcher,
+	refresh?: () => Promise<readonly StashEntry[]>,
 ) {
-	const calls: Calls = { restore: [], drop: [], close: 0 };
+	const calls: Calls = { restore: [], drop: [], close: 0, errors: [] };
 	const renders: number[] = [];
+	let currentEntries = [...entries];
+	const refreshEntries = refresh ?? (async () => currentEntries);
 	const overlay = new StashOverlayComponent(
 		{ requestRender: () => renders.push(renders.length) },
 		theme,
@@ -129,8 +132,12 @@ function harness(
 			onRestore: (e) => calls.restore.push(e),
 			onDrop: async (e) => {
 				calls.drop.push(e);
-				return dropResult;
+				const dropped = await dropResult;
+				if (dropped) currentEntries = currentEntries.filter((candidate) => candidate.id !== e.id);
+				return dropped;
 			},
+			onRefresh: refreshEntries,
+			onRefreshError: (error) => calls.errors.push(error),
 			onClose: () => calls.close++,
 		},
 		keyMatcher,
@@ -311,6 +318,60 @@ test("detail scrolling is independent from list selection", () => {
 	overlay.handleInput("E");
 
 	assert.equal(calls.restore[0]?.id, "second");
+});
+
+test("refresh replaces rows while preserving selected identity and preview", async () => {
+	const initial = [entry("first", "first old"), entry("second", "second old")];
+	const refreshed = [entry("new", "new external"), entry("second", "second updated")];
+	const { overlay, calls } = harness(initial, true, matcher, async () => refreshed);
+	overlay.handleInput("D");
+	overlay.handleInput("T");
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+
+	const preview = renderedText(overlay);
+	assert.ok(preview.includes("second updated"));
+	assert.equal(preview.includes("first old"), false);
+	overlay.handleInput("X");
+	overlay.handleInput("E");
+	assert.equal(calls.restore[0]?.id, "second");
+});
+
+test("newest concurrent refresh wins when an older read completes later", async () => {
+	const resolvers: Array<(entries: readonly StashEntry[]) => void> = [];
+	const refresh = () =>
+		new Promise<readonly StashEntry[]>((resolve) => {
+			resolvers.push(resolve);
+		});
+	const { overlay } = harness([entry("initial", "initial")], true, matcher, refresh);
+	overlay.handleInput("\u001b[15~");
+	overlay.handleInput("\u001b[15~");
+	resolvers[1]?.([entry("newer", "newer snapshot")]);
+	await new Promise((resolve) => setImmediate(resolve));
+	resolvers[0]?.([entry("older", "older snapshot")]);
+	await overlay.settle();
+
+	const rendered = renderedText(overlay);
+	assert.ok(rendered.includes("newer snapshot"));
+	assert.equal(rendered.includes("older snapshot"), false);
+});
+
+test("refresh removal exits a vanished preview and real failures stay visible", async () => {
+	let fail = false;
+	const { overlay, calls } = harness([entry("gone", "gone")], true, matcher, async () => {
+		if (fail) throw new Error("lock unavailable");
+		return [];
+	});
+	overlay.handleInput("T");
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+	assert.ok(renderedText(overlay).includes("No matching drafts"));
+
+	fail = true;
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+	assert.equal(calls.errors.length, 1);
+	assert.match(String(calls.errors[0]), /lock unavailable/);
 });
 
 test("search filters the list by text", () => {

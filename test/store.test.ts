@@ -699,9 +699,28 @@ test("corrupt stash file is quarantined and treated as empty", async () => {
 	writeFileSync(paths.stashFile, "{ not valid json ");
 	const store = await loadStashStore(paths, clock);
 	assert.equal(store.entryCount, 0);
-	// The bad file was moved aside, not destroyed.
-	const quarantined = readdirSync(baseDir).some((name) => name.includes(".corrupt-"));
-	assert.ok(quarantined, "expected a quarantine file");
+	// The bad file was moved aside, not destroyed, and callers can surface it.
+	const recoveryPath = store.takeCorruptRecoveryPath();
+	assert.ok(recoveryPath);
+	assert.ok(recoveryPath.includes(".corrupt-"));
+	assert.equal(store.takeCorruptRecoveryPath(), undefined);
+	assert.equal(readFileSync(recoveryPath, "utf8"), "{ not valid json ");
+});
+
+test("refresh reports concurrent corruption once and does not resurrect cached drafts", async () => {
+	const paths = resolveStashPaths("/refresh-corruption", baseDir);
+	const store = await loadStashStore(paths, clock);
+	await store.add({ text: "must stay quarantined" });
+	writeFileSync(paths.stashFile, "{ broken json");
+
+	await store.refresh();
+	const recoveryPath = store.takeCorruptRecoveryPath();
+
+	assert.ok(recoveryPath);
+	assert.ok(recoveryPath.includes(".corrupt-"));
+	assert.equal(readFileSync(recoveryPath, "utf8"), "{ broken json");
+	assert.equal(store.entryCount, 0);
+	assert.equal(store.takeCorruptRecoveryPath(), undefined);
 });
 
 test("mutation after corruption does not resurrect cached drafts", async () => {

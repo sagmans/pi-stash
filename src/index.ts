@@ -46,6 +46,8 @@ const STASH_ACTION_EVENT = "pi-stash:stash";
 const LIST_ACTION_EVENT = "pi-stash:list";
 const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before restoring";
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
+const REFRESH_FAILED_MESSAGE = "Failed to refresh stash";
+const CORRUPT_RECOVERY_MESSAGE = "Corrupt stash data was quarantined for recovery";
 const ASSET_CLEANUP_FAILED_MESSAGE = "Draft removed, but failed to remove persisted images";
 const ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE =
 	"Stashed draft, but failed to remove older persisted images";
@@ -92,6 +94,10 @@ export function isSupportedSession(session: Pick<StashSession, "mode" | "hasUI">
 }
 
 export function refreshWidget(ui: StashUi, store: StashStore): void {
+	const recoveryPath = store.takeCorruptRecoveryPath();
+	if (recoveryPath) {
+		safeNotify(ui, `${CORRUPT_RECOVERY_MESSAGE}: ${recoveryPath}`, "warning");
+	}
 	ui.setWidget(
 		STASH_WIDGET_KEY,
 		store.entries.length > 0 ? themedWidgetLines(store.entries, ui.theme) : undefined,
@@ -109,6 +115,15 @@ function showUnavailable(ui: StashUi, reason: string): void {
 	ui.setWidget(STASH_WIDGET_KEY, [
 		`${title} ${ui.theme.fg("muted", sanitizeTerminalText(reason))}`,
 	]);
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : "unknown error";
+}
+
+async function refreshVisibleStore(ui: StashUi, store: StashStore): Promise<void> {
+	await store.refresh();
+	refreshWidget(ui, store);
 }
 
 function committedMutation<Result>(error: unknown): CommittedMutationError<Result> | undefined {
@@ -167,7 +182,7 @@ export async function doAssetCleanup(
 	remove: AssetDirRemover = removeAssetDir,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await store.refresh();
+	await refreshVisibleStore(ui, store);
 	if (signal?.aborted) return;
 	const editorText = ui.getEditorText();
 	const activeIds = store.restoredAssetLeaseIds.filter((id) =>
@@ -295,7 +310,7 @@ export async function openOverlay(
 	paths: ReturnType<typeof resolveStashPaths>,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await store.refresh();
+	await refreshVisibleStore(session.ui, store);
 	if (signal?.aborted) return;
 	if (session.mode !== "tui") {
 		const entries = store.entries;
@@ -329,14 +344,16 @@ export async function openOverlay(
 					let dropped: ResolvedEntry | undefined;
 					try {
 						dropped = await store.drop(entry.id);
-					} catch {
-						if (!signal?.aborted) safeNotify(session.ui, DROP_FAILED_MESSAGE, "error");
+					} catch (error) {
+						if (!signal?.aborted) {
+							safeNotify(session.ui, `${DROP_FAILED_MESSAGE}: ${describeError(error)}`, "error");
+						}
 						return false;
 					}
 					if (signal?.aborted) return false;
 					if (!dropped) {
 						safeNotify(session.ui, "Entry already gone", "warning");
-						return false;
+						return true;
 					}
 					refreshWidget(session.ui, store);
 					await drainAssetCleanup(
@@ -349,6 +366,15 @@ export async function openOverlay(
 					);
 					if (!signal?.aborted) safeNotify(session.ui, `Dropped [${dropped.index}]`, "info");
 					return true;
+				},
+				onRefresh: async () => {
+					await refreshVisibleStore(session.ui, store);
+					return [...store.entries];
+				},
+				onRefreshError: (error) => {
+					if (!signal?.aborted) {
+						safeNotify(session.ui, `${REFRESH_FAILED_MESSAGE}: ${describeError(error)}`, "error");
+					}
 				},
 			});
 			cancelOverlay = () => overlay?.cancel();
@@ -429,6 +455,7 @@ async function restoreEntry(
 	}
 	if (editorBlocked || signal?.aborted) return;
 	if (!resolved) {
+		refreshWidget(ui, store);
 		safeNotify(ui, missingMessage, "warning");
 		return;
 	}
@@ -518,7 +545,7 @@ export async function doClear(
 	remove: AssetDirRemover = removeAssetDir,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await store.refresh();
+	await refreshVisibleStore(ui, store);
 	if (signal?.aborted) return;
 	if (store.entryCount === 0) {
 		safeNotify(ui, "No stashed drafts", "info");
@@ -703,8 +730,10 @@ function reportActionFailure(
 	action: string,
 	operation: Promise<void>,
 ): void {
-	void operation.catch(() => {
-		if (active.accepting) safeNotify(active.ui, `pi-stash: ${action} failed`, "error");
+	void operation.catch((error) => {
+		if (active.accepting) {
+			safeNotify(active.ui, `pi-stash: ${action} failed: ${describeError(error)}`, "error");
+		}
 	});
 }
 

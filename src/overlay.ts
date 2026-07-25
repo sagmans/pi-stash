@@ -38,6 +38,8 @@ export type IndexedEntry = { entry: StashEntry; index: number };
 export type StashOverlayCallbacks = {
 	onRestore(entry: StashEntry): void;
 	onDrop(entry: StashEntry): Promise<boolean>;
+	onRefresh(): Promise<readonly StashEntry[]>;
+	onRefreshError(error: unknown): void;
 	onClose(): void;
 };
 
@@ -98,7 +100,7 @@ export function listFooter(theme: OverlayTheme): string {
 	const cancel = keyText("tui.select.cancel" as Keybinding);
 	return theme.fg(
 		"dim",
-		` ${up}${down} move · ${confirm} restore · ${preview} preview · type to filter · ${cancel} close`,
+		` ${up}${down} move · ${confirm} restore · ${preview} preview · F5 refresh · type to filter · ${cancel} close`,
 	);
 }
 
@@ -111,7 +113,7 @@ export function detailFooter(theme: OverlayTheme): string {
 	const cancel = keyText("tui.select.cancel" as Keybinding);
 	return theme.fg(
 		"dim",
-		` d drop · ${confirm} restore · ${up}${down} scroll · ${pageUp}/${pageDown} page · Home/End bounds · ${cancel}/← back`,
+		` d drop · ${confirm} restore · ${up}${down} scroll · ${pageUp}/${pageDown} page · F5 refresh · Home/End bounds · ${cancel}/← back`,
 	);
 }
 
@@ -216,6 +218,8 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private dropInProgress = false;
 	private cancelled = false;
 	private pendingDrop: Promise<void> = Promise.resolve();
+	private readonly pendingRefreshes = new Set<Promise<void>>();
+	private refreshGeneration = 0;
 
 	private readonly searchInput: Input;
 	private readonly headerText: Text;
@@ -269,7 +273,9 @@ export class StashOverlayComponent extends Container implements Focusable {
 
 	handleInput(data: string): void {
 		if (this.cancelled || this.dropInProgress) return;
-		if (this.mode === "list") this.handleListInput(data);
+		if (matchesKey(data, "f5")) {
+			this.requestRefresh();
+		} else if (this.mode === "list") this.handleListInput(data);
 		else this.handleDetailInput(data);
 		this.tui.requestRender();
 	}
@@ -358,6 +364,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 			if ((await this.callbacks.onDrop(current.entry)) && !this.cancelled) {
 				this.removeEntry(current.index);
 				this.backToList();
+				await this.refreshEntries();
 			}
 		} finally {
 			this.dropInProgress = false;
@@ -373,6 +380,53 @@ export class StashOverlayComponent extends Container implements Focusable {
 
 	async settle(): Promise<void> {
 		await this.pendingDrop;
+		while (this.pendingRefreshes.size > 0) {
+			await Promise.all([...this.pendingRefreshes]);
+		}
+	}
+
+	private requestRefresh(): void {
+		const pending = this.refreshEntries();
+		this.pendingRefreshes.add(pending);
+		void pending.finally(() => this.pendingRefreshes.delete(pending));
+	}
+
+	private async refreshEntries(): Promise<void> {
+		const generation = ++this.refreshGeneration;
+		try {
+			const entries = await this.callbacks.onRefresh();
+			if (this.cancelled || generation !== this.refreshGeneration) return;
+			this.replaceEntries(entries);
+			this.tui.requestRender();
+		} catch (error) {
+			if (!this.cancelled && generation === this.refreshGeneration) {
+				this.callbacks.onRefreshError(error);
+			}
+		}
+	}
+
+	private replaceEntries(entries: readonly StashEntry[]): void {
+		const selectedId = this.currentDetail?.entry.id ?? this.filtered[this.selected]?.entry.id;
+		this.items = entries.map((entry, index) => ({ entry, index }));
+		this.filter(this.searchInput.getValue());
+		const selected = this.filtered.findIndex((item) => item.entry.id === selectedId);
+		if (selected >= 0) this.selected = selected;
+
+		if (this.currentDetail) {
+			const refreshedDetail = this.items.find((item) => item.entry.id === selectedId);
+			if (refreshedDetail) {
+				this.currentDetail = refreshedDetail;
+				this.currentPreview = new DraftPreviewComponent(
+					detailBody(refreshedDetail, this.theme).join("\n"),
+					this.theme,
+				);
+			} else {
+				this.mode = "list";
+				this.currentDetail = undefined;
+				this.currentPreview = undefined;
+			}
+		}
+		this.updateBody();
 	}
 
 	private removeEntry(index: number): void {

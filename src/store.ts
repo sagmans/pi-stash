@@ -132,6 +132,7 @@ export class UnsupportedStashSchemaError extends Error {
 
 export class StashStore {
 	private file: StashFile;
+	private corruptRecoveryPath: string | undefined;
 	private readonly stashFile: string;
 
 	constructor(
@@ -145,6 +146,7 @@ export class StashStore {
 		}
 		this.file =
 			loaded.kind === "ready" ? loaded.file : createEmptyStashFile(paths.sanitized, now());
+		this.corruptRecoveryPath = loaded.kind === "corrupt" ? loaded.quarantinedTo : undefined;
 		this.stashFile = paths.stashFile;
 	}
 
@@ -162,6 +164,12 @@ export class StashStore {
 
 	get pendingAssetCleanupIds(): readonly string[] {
 		return this.file.pendingAssetCleanup;
+	}
+
+	takeCorruptRecoveryPath(): string | undefined {
+		const recoveryPath = this.corruptRecoveryPath;
+		this.corruptRecoveryPath = undefined;
+		return recoveryPath;
 	}
 
 	async refresh(): Promise<void> {
@@ -315,6 +323,7 @@ export class StashStore {
 			throw new UnsupportedStashSchemaError(loaded.schemaVersion);
 		} else {
 			this.file = createEmptyStashFile(this.paths.sanitized, this.now());
+			this.corruptRecoveryPath = loaded.quarantinedTo;
 		}
 		// Corrupt input is quarantined and replaced with a fresh in-memory file so
 		// later writes cannot resurrect entries from the invalidated snapshot.

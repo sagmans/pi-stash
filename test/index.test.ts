@@ -31,6 +31,7 @@ import {
 } from "../index.ts";
 import { removeAssetDir } from "../src/assets.ts";
 import { beginAddIntent, beginRestoreIntent } from "../src/intents.ts";
+import type { StashOverlayComponent } from "../src/overlay.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
@@ -621,6 +622,133 @@ test("openOverlay resolves when shutdown aborts an open custom UI", async () => 
 	await opening;
 
 	assert.equal(store.entryCount, 1);
+});
+
+test("open overlay refreshes concurrent additions and reports quarantined corruption", async () => {
+	const paths = resolveStashPaths("/concurrent-overlay-refresh", baseDir);
+	const store = await loadStashStore(paths);
+	await store.add({ text: "initial" });
+	const writer = await loadStashStore(paths);
+	const ui = fakeUi();
+	let overlay: StashOverlayComponent | undefined;
+	ui.custom = (factory) =>
+		new Promise((resolve) => {
+			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
+				| StashOverlayComponent
+				| undefined;
+		});
+	const opening = openOverlay(
+		{ cwd: "/concurrent-overlay-refresh", mode: "tui", hasUI: true, ui },
+		store,
+		paths,
+	);
+	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
+	}
+	assert.ok(overlay);
+
+	await writer.add({ text: "external addition" });
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+	assert.ok(overlay.render(80).some((line) => line.includes("external addition")));
+	assert.ok(ui.widgets.get("pi-stash")?.some((line) => line.includes("external addition")));
+
+	writeFileSync(paths.stashFile, "{ corrupt concurrent state");
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+	assert.ok(ui.notifs.some(({ message }) => message.includes("quarantined for recovery")));
+	assert.ok(overlay.render(80).some((line) => line.includes("No matching drafts")));
+
+	overlay.handleInput("\u001b");
+	await opening;
+});
+
+test("overlay treats an externally removed drop as a benign authoritative refresh", async () => {
+	const paths = resolveStashPaths("/concurrent-overlay-drop", baseDir);
+	const store = await loadStashStore(paths);
+	const stored = await store.add({ text: "removed elsewhere" });
+	const writer = await loadStashStore(paths);
+	const ui = fakeUi();
+	let overlay: StashOverlayComponent | undefined;
+	ui.custom = (factory) =>
+		new Promise((resolve) => {
+			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
+				| StashOverlayComponent
+				| undefined;
+		});
+	const opening = openOverlay(
+		{ cwd: "/concurrent-overlay-drop", mode: "tui", hasUI: true, ui },
+		store,
+		paths,
+	);
+	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
+	}
+	assert.ok(overlay);
+
+	await writer.drop(stored.id);
+	overlay.handleInput("\t");
+	overlay.handleInput("d");
+	await overlay.settle();
+
+	assert.ok(ui.notifs.some(({ message }) => message === "Entry already gone"));
+	assert.equal(
+		ui.notifs.some(({ message }) => message.startsWith("Failed to drop stash entry")),
+		false,
+	);
+	assert.ok(overlay.render(80).some((line) => line.includes("No matching drafts")));
+	overlay.handleInput("\u001b");
+	await opening;
+});
+
+test("overlay preserves rows and reports real lock and mutation failures", async () => {
+	const paths = resolveStashPaths("/concurrent-overlay-lock", baseDir);
+	const store = await loadStashStore(paths);
+	await store.add({ text: "preserved row" });
+	const ui = fakeUi();
+	let overlay: StashOverlayComponent | undefined;
+	ui.custom = (factory) =>
+		new Promise((resolve) => {
+			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
+				| StashOverlayComponent
+				| undefined;
+		});
+	const opening = openOverlay(
+		{ cwd: "/concurrent-overlay-lock", mode: "tui", hasUI: true, ui },
+		store,
+		paths,
+	);
+	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
+		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
+	}
+	assert.ok(overlay);
+	mkdirSync(`${paths.stashFile}.lock`);
+	writeFileSync(path.join(`${paths.stashFile}.lock`, "owner.json"), "placeholder");
+	poisonLockOwner(paths);
+
+	overlay.handleInput("\t");
+	overlay.handleInput("d");
+	await overlay.settle();
+	assert.ok(
+		ui.notifs.some(
+			({ message }) =>
+				message.includes("Failed to drop stash entry") && message.includes("symbolic link"),
+		),
+	);
+	overlay.handleInput("\u001b");
+	overlay.handleInput("\u001b[15~");
+	await overlay.settle();
+	assert.ok(
+		ui.notifs.some(
+			({ message }) =>
+				message.includes("Failed to refresh stash") && message.includes("symbolic link"),
+		),
+	);
+	assert.ok(overlay.render(80).some((line) => line.includes("preserved row")));
+	overlay.handleInput("\u001b");
+	await opening;
+	removePoisonedLock(paths);
+	assert.equal((await loadStashStore(paths)).entries[0]?.text, "preserved row");
 });
 
 test("doClear cancellation leaves every draft untouched", async () => {
