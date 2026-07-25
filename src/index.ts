@@ -654,7 +654,7 @@ function enqueueOperation(
 /** Slash commands. Each resolves the active session, then delegates. */
 function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void {
 	pi.registerCommand("stash", {
-		description: "Stash the current editor draft (prefix+s)",
+		description: "Stash draft with optional label; clears editor after persistence",
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -664,7 +664,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		},
 	});
 	pi.registerCommand("stash-list", {
-		description: "Open the stash list (prefix+shift+s)",
+		description: "Search or preview stashes; restoring requires an empty editor",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -679,7 +679,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		},
 	});
 	pi.registerCommand("stash-pop", {
-		description: "Restore a stashed draft into the editor and remove it (default: newest)",
+		description: "Restore index-or-id (default newest) into an empty editor and remove stash",
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -689,7 +689,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		},
 	});
 	pi.registerCommand("stash-drop", {
-		description: "Delete a stashed draft and its persisted images (default: newest)",
+		description: "Permanently delete index-or-id (default newest) and its copied images",
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -699,7 +699,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		},
 	});
 	pi.registerCommand("stash-cleanup", {
-		description: "Remove restored image assets no longer referenced by the editor",
+		description: "Delete unreferenced restored images; retain editor references",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -709,7 +709,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		},
 	});
 	pi.registerCommand("stash-clear", {
-		description: "Delete every stashed draft for this worktree",
+		description: "Confirm, then permanently delete every stash and copied image",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;

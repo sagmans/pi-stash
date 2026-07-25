@@ -902,6 +902,70 @@ test("doClear is a no-op when the user declines", async () => {
 	assert.equal(store.entryCount, 1);
 });
 
+test("registered commands execute the documented stash workflows", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	try {
+		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
+		assert.deepEqual([...commands.keys()], [...STASH_COMMAND_NAMES]);
+		const ui = fakeUi({ editorText: "saved through command" });
+		let listOpened = 0;
+		ui.custom = async () => {
+			listOpened += 1;
+			return undefined;
+		};
+		const ctx = { cwd: "/command-contract", mode: "tui", hasUI: true, ui };
+		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+		await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+		await commands.get("stash")?.handler("release note", ctx);
+		assert.equal(ui.editorText, "");
+		assert.equal((await loadStashStore(paths)).entries[0]?.message, "release note");
+		await commands.get("stash-list")?.handler("", ctx);
+		assert.equal(listOpened, 1);
+
+		ui.editorText = "current work";
+		await commands.get("stash-pop")?.handler("0", ctx);
+		assert.equal(ui.editorText, "current work");
+		assert.ok(ui.notifs.some(({ message }) => message.includes("Clear or stash")));
+		ui.editorText = "";
+		await commands.get("stash-pop")?.handler("0", ctx);
+		assert.equal(ui.editorText, "saved through command");
+		assert.equal((await loadStashStore(paths)).entryCount, 0);
+
+		ui.editorText = "drop through command";
+		await commands.get("stash")?.handler("", ctx);
+		await commands.get("stash-drop")?.handler("missing", ctx);
+		assert.ok(ui.notifs.at(-1)?.message.includes('No stash entry matching "missing"'));
+		await commands.get("stash-drop")?.handler("0", ctx);
+		assert.equal((await loadStashStore(paths)).entryCount, 0);
+		await commands.get("stash-cleanup")?.handler("", ctx);
+		assert.equal(ui.notifs.at(-1)?.message, "Asset cleanup: deleted 0, retained 0, failed 0");
+
+		ui.editorText = "clear through command";
+		await commands.get("stash")?.handler("", ctx);
+		await commands.get("stash-clear")?.handler("", ctx);
+		assert.equal((await loadStashStore(paths)).entryCount, 0);
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	}
+});
+
+test("command help states selectors, editor prerequisites, and destructive effects", () => {
+	const { pi, commands } = extensionHarness();
+	installPiStash(pi);
+
+	assert.match(commands.get("stash")?.description ?? "", /optional label.*clears editor/iu);
+	assert.match(commands.get("stash-list")?.description ?? "", /search.*empty editor/iu);
+	assert.match(commands.get("stash-pop")?.description ?? "", /index-or-id.*empty editor/iu);
+	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
+	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
+	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);
+});
+
 test("refreshWidget populates with entries and clears when empty", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const ui = fakeUi();

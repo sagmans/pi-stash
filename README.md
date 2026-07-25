@@ -32,11 +32,20 @@ Install from npm so pi only offers updates after a published release.
 | List drafts | `/stash-list` | `prefix+Shift+S` |
 | Restore newest or selected entry | `/stash-pop [index-or-id]` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
-| Delete all entries | `/stash-clear` | — |
+| Remove unreferenced restored images | `/stash-cleanup` | — |
+| Delete all entries after confirmation | `/stash-clear` | — |
 
-Index `0` is newest. Restore removes the entry but keeps copied images because
-the restored editor text still references them. Drop and clear remove copied
-images.
+Index `0` is newest; selectors accept a displayed zero-based index or exact entry
+ID. Restore requires an empty editor and reports how to clear or stash current
+text when blocked. A successful restore removes the stash entry but durably
+leases copied images while the editor still references them. `/stash-cleanup`
+removes abandoned leases and retries prior cleanup failures. Drop and confirmed
+clear permanently remove entries and queue their copied images for deletion.
+
+The list overlay supports configured up/down and confirm/cancel keys, typing to
+filter, the configured preview key, `F5` refresh, and `d` to drop from preview.
+Empty selections and missing command selectors produce a notice without changing
+stored drafts.
 
 The optional shortcuts require a compatible `prefix-keybindings` extension.
 Without it, pi-stash shows one notice and remains fully usable through slash
