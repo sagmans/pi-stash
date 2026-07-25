@@ -47,6 +47,8 @@ const ACTIVE_CLEANUP_MESSAGE = "active stash id queued for cleanup";
 const DUPLICATE_STASH_ID_MESSAGE = "duplicate stash id";
 const INVALID_ASSET_COUNT_MESSAGE = "invalid asset count";
 const PENDING_STASH_ID_MESSAGE = "stash id pending asset cleanup";
+const COMMITTED_MUTATION_ERROR_MESSAGE = "stash mutation committed but lock release failed";
+const MUTATION_AND_UNLOCK_ERROR_MESSAGE = "stash mutation and lock release both failed";
 
 type LockOwner = {
 	pid: number;
@@ -72,6 +74,18 @@ export type LoadResult =
 	| { kind: "unsupported"; schemaVersion: number };
 
 export type StashWriter = (filePath: string, file: StashFile) => Promise<void>;
+
+export class CommittedMutationError<Result> extends Error {
+	readonly committed = true;
+
+	constructor(
+		readonly result: Result,
+		readonly cleanupError: unknown,
+	) {
+		super(COMMITTED_MUTATION_ERROR_MESSAGE, { cause: cleanupError });
+		this.name = "CommittedMutationError";
+	}
+}
 
 export class StashStore {
 	private file: StashFile;
@@ -117,7 +131,7 @@ export class StashStore {
 		assertSafeAssetCount(input.assetCount);
 		const cleanupIds = [...(input.cleanupIds ?? [])];
 		for (const cleanupId of cleanupIds) assertSafeEntryId(cleanupId);
-		return withStashLock(this.stashFile, async () => {
+		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
 			assertAvailableOwnership(this.file, id, cleanupIds);
@@ -157,7 +171,7 @@ export class StashStore {
 
 	async completeAssetCleanup(id: string): Promise<void> {
 		assertSafeEntryId(id);
-		await withStashLock(this.stashFile, async () => {
+		await withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
 			if (!this.file.pendingAssetCleanup.includes(id)) return;
@@ -172,7 +186,7 @@ export class StashStore {
 	}
 
 	async clear(): Promise<string[]> {
-		return withStashLock(this.stashFile, async () => {
+		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
 			const removedIds = this.file.entries.map((entry) => entry.id);
@@ -192,7 +206,7 @@ export class StashStore {
 		queueAssetCleanup: boolean,
 		beforeRemove?: (resolved: ResolvedEntry) => boolean,
 	): Promise<ResolvedEntry | undefined> {
-		return withStashLock(this.stashFile, async () => {
+		return withStashMutationLock(this.stashFile, async () => {
 			await this.reloadFresh();
 			this.assertWritable();
 			const resolved = resolveBySelector(this.file.entries, selector);
@@ -350,18 +364,39 @@ async function writeStashFile(filePath: string, file: StashFile): Promise<void> 
 	}
 }
 
+function withStashMutationLock<Result>(
+	filePath: string,
+	operation: () => Promise<Result>,
+): Promise<Result> {
+	return withStashLock(filePath, operation, true);
+}
+
 async function withStashLock<Result>(
 	filePath: string,
 	operation: () => Promise<Result>,
+	mutation = false,
 ): Promise<Result> {
 	await ensurePrivateDirectory(path.dirname(filePath));
 	const lockPath = `${filePath}.lock`;
 	const token = await acquireStashLock(lockPath);
+	let result: Result;
 	try {
-		return await operation();
-	} finally {
-		await releaseStashLock(lockPath, token);
+		result = await operation();
+	} catch (operationError) {
+		try {
+			await releaseStashLock(lockPath, token);
+		} catch (cleanupError) {
+			throw new AggregateError([operationError, cleanupError], MUTATION_AND_UNLOCK_ERROR_MESSAGE);
+		}
+		throw operationError;
 	}
+	try {
+		await releaseStashLock(lockPath, token);
+	} catch (cleanupError) {
+		if (mutation) throw new CommittedMutationError(result, cleanupError);
+		throw cleanupError;
+	}
+	return result;
 }
 
 async function acquireStashLock(lockPath: string): Promise<string> {

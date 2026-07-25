@@ -1,5 +1,13 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -112,6 +120,27 @@ afterEach(() => {
 	rmSync(baseDir, { recursive: true, force: true });
 });
 
+function poisonLockOwner(paths: ReturnType<typeof resolveStashPaths>): void {
+	const lockPath = `${paths.stashFile}.lock`;
+	const ownerPath = path.join(lockPath, "owner.json");
+	const targetPath = `${lockPath}.poison`;
+	rmSync(ownerPath, { force: true });
+	writeFileSync(targetPath, "not a lock owner");
+	symlinkSync(targetPath, ownerPath);
+}
+
+function removePoisonedLock(paths: ReturnType<typeof resolveStashPaths>): void {
+	rmSync(`${paths.stashFile}.lock`, { recursive: true, force: true });
+	rmSync(`${paths.stashFile}.lock.poison`, { force: true });
+}
+
+function loadReleaseFailingStore(paths: ReturnType<typeof resolveStashPaths>) {
+	return loadStashStore(paths, Date.now, async (filePath, file) => {
+		writeFileSync(filePath, JSON.stringify(file));
+		poisonLockOwner(paths);
+	});
+}
+
 test("doStash persists the draft, clears the editor, and shows the widget", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -124,6 +153,23 @@ test("doStash persists the draft, clears the editor, and shows the widget", asyn
 	assert.equal(ui.editorText, "", "editor cleared after stash");
 	assert.ok(ui.widgets.has("pi-stash"), "widget populated");
 	assert.ok(ui.notifs.some((n) => n.message.startsWith("Stashed")));
+});
+
+test("doStash completes committed work when lock release fails", async () => {
+	const paths = resolveStashPaths("/stash-unlock-failure", baseDir);
+	const store = await loadReleaseFailingStore(paths);
+	const ui = fakeUi({ editorText: "committed draft" });
+
+	await doStash(ui, store, paths);
+	removePoisonedLock(paths);
+
+	const reopened = await loadStashStore(paths);
+	assert.equal(reopened.entryCount, 1);
+	assert.equal(reopened.entries[0]?.text, "committed draft");
+	assert.equal(ui.editorText, "");
+	assert.ok(
+		ui.notifs.some((notification) => notification.message.includes("release storage lock")),
+	);
 });
 
 test("doStash preserves text typed while persistence is in progress", async () => {
@@ -197,6 +243,36 @@ test("doStash removes staged assets when the store rejects the entry", async () 
 	assert.equal(ui.editorText, `see ${image}`);
 });
 
+test("doStash aggregates persistence and staged-asset rollback failures", async () => {
+	const paths = resolveStashPaths("/stash-rollback-failure", baseDir);
+	const store = await loadStashStore(paths);
+	writeFileSync(
+		paths.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION + 1,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+		}),
+	);
+	const image = path.join(baseDir, "rollback.png");
+	writeFileSync(image, "png");
+	const ui = fakeUi({ editorText: `see ${image}` });
+
+	await assert.rejects(
+		() =>
+			doStash(ui, store, paths, undefined, async () => {
+				throw new Error("rollback failed");
+			}),
+		(error: unknown) =>
+			error instanceof AggregateError &&
+			error.errors.some((nested) => String(nested).includes("unsupported stash schema")) &&
+			error.errors.some((nested) => String(nested).includes("rollback failed")),
+	);
+	assert.equal(ui.editorText, `see ${image}`);
+});
+
 test("restashing a restored image transfers ownership for later drop", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const store = await loadStashStore(paths);
@@ -240,6 +316,23 @@ test("doPop restores the newest draft into the editor and removes it", async () 
 	assert.equal(store.entryCount, 1);
 	assert.equal(store.entries[0]?.text, "first");
 	assert.ok(ui.notifs.some((n) => n.message.startsWith("Restored")));
+});
+
+test("doPop keeps a committed restore when lock release fails", async () => {
+	const paths = resolveStashPaths("/pop-unlock-failure", baseDir);
+	const seed = await loadStashStore(paths);
+	await seed.add({ text: "restored draft" });
+	const store = await loadReleaseFailingStore(paths);
+	const ui = fakeUi();
+
+	await doPop(ui, store, paths);
+	removePoisonedLock(paths);
+
+	assert.equal(ui.editorText, "restored draft");
+	assert.equal((await loadStashStore(paths)).entryCount, 0);
+	assert.ok(
+		ui.notifs.some((notification) => notification.message.includes("release storage lock")),
+	);
 });
 
 test("doPop defaults to the newest draft added by another store", async () => {
@@ -353,6 +446,24 @@ test("doDrop removes the entry and its asset dir", async () => {
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 });
 
+test("doDrop keeps a committed removal when lock release fails", async () => {
+	const paths = resolveStashPaths("/drop-unlock-failure", baseDir);
+	const seed = await loadStashStore(paths);
+	await seed.add({ text: "removed draft" });
+	const store = await loadReleaseFailingStore(paths);
+	const ui = fakeUi();
+
+	await doDrop(ui, store, paths);
+	removePoisonedLock(paths);
+
+	const reopened = await loadStashStore(paths);
+	assert.equal(reopened.entryCount, 0);
+	assert.equal(reopened.pendingAssetCleanupIds.length, 1);
+	assert.ok(
+		ui.notifs.some((notification) => notification.message.includes("release storage lock")),
+	);
+});
+
 test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	const paths = resolveStashPaths("/drop-cleanup", baseDir);
 	const store = await loadStashStore(paths);
@@ -390,6 +501,24 @@ test("doClear respects a confirmed dialog and wipes everything", async () => {
 	assert.equal(ui.widgets.has("pi-stash"), false, "widget cleared");
 });
 
+test("doClear keeps a committed clear when lock release fails", async () => {
+	const paths = resolveStashPaths("/clear-unlock-failure", baseDir);
+	const seed = await loadStashStore(paths);
+	await seed.add({ text: "removed draft" });
+	const store = await loadReleaseFailingStore(paths);
+	const ui = fakeUi({ confirmResult: true });
+
+	await doClear(ui, store, paths);
+	removePoisonedLock(paths);
+
+	const reopened = await loadStashStore(paths);
+	assert.equal(reopened.entryCount, 0);
+	assert.equal(reopened.pendingAssetCleanupIds.length, 1);
+	assert.ok(
+		ui.notifs.some((notification) => notification.message.includes("release storage lock")),
+	);
+});
+
 test("doClear sees drafts added by another store after startup", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const stale = await loadStashStore(paths);
@@ -425,6 +554,26 @@ test("doClear reports partial asset cleanup and preserves failed work", async ()
 	assert.equal(existsSync(paths.assetDir(failed.id)), true);
 	assert.equal(existsSync(paths.assetDir(removed.id)), false);
 	assert.ok(ui.notifs.some((notification) => notification.message.includes("failed to remove")));
+});
+
+test("drainAssetCleanup keeps a committed acknowledgement when lock release fails", async () => {
+	const paths = resolveStashPaths("/cleanup-unlock-failure", baseDir);
+	const seed = await loadStashStore(paths);
+	const entry = await seed.add({ text: "removed draft", assetCount: 1 });
+	mkdirSync(paths.assetDir(entry.id), { recursive: true });
+	writeFileSync(path.join(paths.assetDir(entry.id), "00-image.png"), "image");
+	await seed.drop(entry.id);
+	const store = await loadReleaseFailingStore(paths);
+	const ui = fakeUi();
+
+	await drainAssetCleanup(ui, store, paths);
+	removePoisonedLock(paths);
+
+	assert.equal(existsSync(paths.assetDir(entry.id)), false);
+	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
+	assert.ok(
+		ui.notifs.some((notification) => notification.message.includes("release storage lock")),
+	);
 });
 
 test("doClear is a no-op when the user declines", async () => {

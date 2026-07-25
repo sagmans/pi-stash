@@ -22,7 +22,7 @@ import { persistTmpImages, removeAssetDir } from "./assets.ts";
 import { StashOverlayComponent } from "./overlay.ts";
 import { resolveStashPaths } from "./paths.ts";
 import { type Claim, startStashBinding } from "./prefix.ts";
-import { loadStashStore, type StashStore } from "./store.ts";
+import { CommittedMutationError, loadStashStore, type StashStore } from "./store.ts";
 import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
 import { themedWidgetLines } from "./widget.ts";
 
@@ -34,6 +34,8 @@ const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
 const ASSET_CLEANUP_FAILED_MESSAGE = "Draft removed, but failed to remove persisted images";
 const ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE =
 	"Stashed draft, but failed to remove older persisted images";
+const LOCK_RELEASE_FAILED_MESSAGE = "failed to release storage lock";
+const ROLLBACK_FAILED_MESSAGE = "stash persistence and staged-asset rollback both failed";
 
 // Narrow UI surface the orchestration needs. The real ExtensionContext.ui
 // satisfies this structurally; tests pass a minimal fake.
@@ -80,6 +82,10 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 
 export type AssetDirRemover = (assetDir: string) => Promise<void>;
 
+function committedMutation<Result>(error: unknown): CommittedMutationError<Result> | undefined {
+	return error instanceof CommittedMutationError ? error : undefined;
+}
+
 export async function drainAssetCleanup(
 	ui: StashUi,
 	store: StashStore,
@@ -88,16 +94,20 @@ export async function drainAssetCleanup(
 	failureMessage = ASSET_CLEANUP_FAILED_MESSAGE,
 ): Promise<void> {
 	let failed = false;
+	let lockReleaseFailed = false;
 	for (const id of [...store.pendingAssetCleanupIds]) {
 		try {
 			await remove(paths.assetDir(id));
 			await store.completeAssetCleanup(id);
-		} catch {
-			// Keeping the id in the ledger makes the cleanup retryable next session.
-			failed = true;
+		} catch (error) {
+			if (committedMutation(error)) lockReleaseFailed = true;
+			else failed = true;
 		}
 	}
 	if (failed) ui.notify(failureMessage, "error");
+	if (lockReleaseFailed) {
+		ui.notify(`Asset cleanup committed, but ${LOCK_RELEASE_FAILED_MESSAGE}`, "error");
+	}
 }
 
 export async function doStash(
@@ -124,6 +134,7 @@ export async function doStash(
 		assetDir,
 		ownedAssetsRoot: paths.assetsRoot,
 	});
+	let lockReleaseFailed = false;
 	try {
 		await store.add({
 			id,
@@ -133,15 +144,26 @@ export async function doStash(
 			cleanupIds: transferredAssetDirs.map((directory) => path.basename(directory)),
 		});
 	} catch (error) {
-		await removeAssetDir(assetDir);
-		throw error;
+		if (committedMutation(error)) lockReleaseFailed = true;
+		else {
+			try {
+				await remove(assetDir);
+			} catch (rollbackError) {
+				throw new AggregateError([error, rollbackError], ROLLBACK_FAILED_MESSAGE);
+			}
+			throw error;
+		}
 	}
 	if (ui.getEditorText() === text) ui.setEditorText("");
-	await drainAssetCleanup(ui, store, paths, remove, ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE);
+	if (!lockReleaseFailed) {
+		await drainAssetCleanup(ui, store, paths, remove, ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE);
+	}
 	refreshWidget(ui, store);
+	const successMessage =
+		count > 0 ? `Stashed [0] · ${count} image${count > 1 ? "s" : ""} persisted` : "Stashed [0]";
 	ui.notify(
-		count > 0 ? `Stashed [0] · ${count} image${count > 1 ? "s" : ""} persisted` : "Stashed [0]",
-		"info",
+		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
+		lockReleaseFailed ? "error" : "info",
 	);
 }
 
@@ -229,6 +251,7 @@ async function restoreEntry(
 	let restoredText: string | undefined;
 	const priorText = ui.getEditorText();
 	let resolved: ResolvedEntry | undefined;
+	let lockReleaseFailed = false;
 	try {
 		resolved = await store.pop(selector, (candidate) => {
 			if (!editorIsReadyForRestore(ui)) {
@@ -242,12 +265,18 @@ async function restoreEntry(
 			return true;
 		});
 	} catch (error) {
-		// The editor is not transactional. Roll it back only when the user has not
-		// typed since the candidate was shown while the durable write was pending.
-		if (restoredText !== undefined && ui.getEditorText() === restoredText) {
-			ui.setEditorText(priorText);
+		const committed = committedMutation<ResolvedEntry | undefined>(error);
+		if (committed) {
+			resolved = committed.result;
+			lockReleaseFailed = true;
+		} else {
+			// The editor is not transactional. Roll it back only when the user has not
+			// typed since the candidate was shown while the durable write was pending.
+			if (restoredText !== undefined && ui.getEditorText() === restoredText) {
+				ui.setEditorText(priorText);
+			}
+			throw error;
 		}
-		throw error;
 	}
 	if (editorBlocked) return;
 	if (!resolved) {
@@ -256,7 +285,11 @@ async function restoreEntry(
 	}
 	refreshWidget(ui, store);
 	// Assets are intentionally kept: the restored text references them.
-	ui.notify(`Restored [${resolved.index}]`, "info");
+	const successMessage = `Restored [${resolved.index}]`;
+	ui.notify(
+		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
+		lockReleaseFailed ? "error" : "info",
+	);
 }
 
 export async function doPop(
@@ -280,14 +313,27 @@ export async function doDrop(
 	selector?: string,
 	remove: AssetDirRemover = removeAssetDir,
 ): Promise<void> {
-	const resolved = await store.drop(selector);
+	let resolved: ResolvedEntry | undefined;
+	let lockReleaseFailed = false;
+	try {
+		resolved = await store.drop(selector);
+	} catch (error) {
+		const committed = committedMutation<ResolvedEntry | undefined>(error);
+		if (!committed) throw error;
+		resolved = committed.result;
+		lockReleaseFailed = true;
+	}
 	if (!resolved) {
 		ui.notify(selector ? `No stash entry matching "${selector}"` : "No stashed drafts", "warning");
 		return;
 	}
 	refreshWidget(ui, store);
-	await drainAssetCleanup(ui, store, paths, remove);
-	ui.notify(`Dropped [${resolved.index}]`, "info");
+	if (!lockReleaseFailed) await drainAssetCleanup(ui, store, paths, remove);
+	const successMessage = `Dropped [${resolved.index}]`;
+	ui.notify(
+		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
+		lockReleaseFailed ? "error" : "info",
+	);
 }
 
 export async function doClear(
@@ -303,10 +349,23 @@ export async function doClear(
 	}
 	const ok = await ui.confirm("Clear stash?", "Delete every stashed draft for this worktree?");
 	if (!ok) return;
-	const ids = await store.clear();
+	let ids: string[];
+	let lockReleaseFailed = false;
+	try {
+		ids = await store.clear();
+	} catch (error) {
+		const committed = committedMutation<string[]>(error);
+		if (!committed) throw error;
+		ids = committed.result;
+		lockReleaseFailed = true;
+	}
 	refreshWidget(ui, store);
-	await drainAssetCleanup(ui, store, paths, remove);
-	ui.notify(`Cleared ${ids.length} draft${ids.length === 1 ? "" : "s"}`, "info");
+	if (!lockReleaseFailed) await drainAssetCleanup(ui, store, paths, remove);
+	const successMessage = `Cleared ${ids.length} draft${ids.length === 1 ? "" : "s"}`;
+	ui.notify(
+		lockReleaseFailed ? `${successMessage}, but ${LOCK_RELEASE_FAILED_MESSAGE}` : successMessage,
+		lockReleaseFailed ? "error" : "info",
+	);
 }
 
 type ActiveSession = {

@@ -67,6 +67,20 @@ function writeLegacyStash(
 	);
 }
 
+function poisonLockOwner(paths: ReturnType<typeof resolveStashPaths>): void {
+	const lockPath = `${paths.stashFile}.lock`;
+	const ownerPath = path.join(lockPath, "owner.json");
+	const targetPath = `${lockPath}.poison`;
+	rmSync(ownerPath, { force: true });
+	writeFileSync(targetPath, "not a lock owner");
+	symlinkSync(targetPath, ownerPath);
+}
+
+function removePoisonedLock(paths: ReturnType<typeof resolveStashPaths>): void {
+	rmSync(`${paths.stashFile}.lock`, { recursive: true, force: true });
+	rmSync(`${paths.stashFile}.lock.poison`, { force: true });
+}
+
 test("loads empty when no stash file exists", async () => {
 	const store = await storeFor();
 	assert.equal(store.entryCount, 0);
@@ -247,6 +261,48 @@ test("add rejects unsafe asset counts", async () => {
 		/invalid asset count/,
 	);
 	assert.equal(store.entryCount, 0);
+});
+
+test("add reports its committed result when lock release fails", async () => {
+	const paths = resolveStashPaths("/committed-add", baseDir);
+	const store = await loadStashStore(paths, clock, async (filePath, file) => {
+		writeFileSync(filePath, JSON.stringify(file));
+		poisonLockOwner(paths);
+	});
+	let resultId: string | undefined;
+
+	await assert.rejects(
+		() => store.add({ text: "committed" }),
+		(error: unknown) => {
+			const committed = error as { committed?: boolean; result?: { id?: string } };
+			resultId = committed.result?.id;
+			return committed.committed === true && typeof resultId === "string";
+		},
+	);
+	removePoisonedLock(paths);
+
+	const reopened = await loadStashStore(paths, clock);
+	assert.equal(reopened.entryCount, 1);
+	assert.equal(reopened.entries[0]?.id, resultId);
+	assert.equal(reopened.entries[0]?.text, "committed");
+});
+
+test("add preserves mutation and unlock errors when both fail", async () => {
+	const paths = resolveStashPaths("/double-failure", baseDir);
+	const store = await loadStashStore(paths, clock, async () => {
+		poisonLockOwner(paths);
+		throw new Error("write failed");
+	});
+
+	await assert.rejects(
+		() => store.add({ text: "not committed" }),
+		(error: unknown) =>
+			error instanceof AggregateError &&
+			error.errors.some((nested) => String(nested).includes("write failed")) &&
+			error.errors.some((nested) => String(nested).includes("symbolic link")),
+	);
+	removePoisonedLock(paths);
+	assert.equal(existsSync(paths.stashFile), false);
 });
 
 test("pop defaults to newest and removes it", async () => {
