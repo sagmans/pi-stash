@@ -9,20 +9,18 @@ private stash storage so restored references survive OS cleanup.
 
 ## Features
 
-- Stash the current editor draft and clear the editor after durable persistence.
+- Save and restore unsent drafts without submitting them to a model.
 - List, filter, preview, restore, drop, or clear newest-first entries.
-- Keep linked worktrees and ordinary directories isolated by exact working directory.
-- Use atomic writes, cross-process locking, crash recovery, corruption quarantine, and private permissions.
-- Own only recognized temporary clipboard images; leave repository and other absolute paths unchanged.
-- Integrate with `prefix-keybindings` when available; slash commands remain the fallback.
+- Isolate storage by exact working directory, including linked worktrees.
+- Persist recognized temporary clipboard images; ignore other absolute paths.
+- Protect data with private permissions, atomic writes, locking, crash recovery, and corruption quarantine.
+- Support optional `prefix-keybindings`; slash commands always work.
 
 ## Install
 
-> **Security:** Pi does not sandbox extensions. Installing pi-stash executes its
-> code with the coding agent's full local privileges, including access to files,
-> processes, credentials available to Pi, and the network. Review and trust the
-> package version before installing. pi-stash's runtime code performs no network
-> requests, but that is an implementation property, not a sandbox boundary.
+> **Security:** Pi does not sandbox extensions. pi-stash runs with
+> Pi's full local privileges. Review the package before installing. Runtime code
+> makes no network requests, but this is not a sandbox boundary.
 
 ```bash
 pi install npm:@sagmans/pi-stash
@@ -44,19 +42,14 @@ permission guarantees.
 | Remove unreferenced restored images | `/stash-cleanup` | — |
 | Delete all entries after confirmation | `/stash-clear` | — |
 
-Index `0` is newest. Selectors accept a displayed zero-based index or exact
-entry ID. Restore requires an empty editor. A successful restore removes the
-entry but leases copied images while editor text references them. Drop and
-confirmed clear remove entries first, then durably queue owned images for
-best-effort deletion. `/stash-cleanup` removes leases not referenced by the
-current editor and retries pending failures; close other Pi sessions for the
-same scope before using it.
+Index `0` is newest. Selectors accept a displayed index or exact entry ID.
+Restore requires an empty editor and removes the entry. Drop and confirmed clear
+queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
+other Pi sessions for the same scope first.
 
-The list overlay supports configured up/down and confirm/cancel keys, typing to
-filter, the configured preview key, `F5` refresh, and `d` to drop from preview.
-Empty selections and missing selectors leave storage unchanged. Without a
-compatible `prefix-keybindings` extension, one notice appears and every slash
-command remains available.
+The overlay supports configured navigation and confirmation keys, typing to
+filter, preview, `F5` refresh, and `d` to drop. Without compatible
+`prefix-keybindings`, slash commands remain available.
 
 ## Limits
 
@@ -67,34 +60,21 @@ command remains available.
 
 ## Storage, privacy, and recovery
 
-Stashes are local plaintext. Directories use `0700`; JSON, metadata, and copied
-images use `0600`. pi-stash rejects links, foreign ownership, and unexpected
-file types instead of following them. Entries have no automatic expiry.
+Stashes are local plaintext with private POSIX permissions and no automatic
+expiry. pi-stash rejects unsafe paths and ownership, preserves unsupported
+schemas, quarantines invalid current data, and retains failed cleanup for retry.
 
-Startup migrates the current scope from the historical fixed
-`~/.pi/agent/pi-stash/` root when Pi now uses another configured agent
-directory. It resumes interrupted migration but never guesses through a
-conflicting destination. Unsupported future schemas remain untouched and make
-the scope unavailable. Invalid current data is quarantined under a reported
-recovery path. Cleanup failures retain retry metadata rather than resurrecting
-deleted entries.
-
-Read [storage, migration, image lifecycle, and non-destructive recovery](docs/storage-recovery.md)
-before inspecting or changing stash files. Never share stash data or raw
-terminal captures without redaction.
+Read [storage and recovery](docs/storage-recovery.md) before inspecting or
+changing stash files. Never share stash data or raw terminal captures without
+redaction.
 
 ## Documentation
 
-- [Storage and recovery](docs/storage-recovery.md) — location, migration, images, retention, failure handling
-- [Maintainer development](docs/maintainer-development.md) — setup, checks, and hooks
-- [Maintainer smoke](docs/maintainer-smoke.md) — packaged two-launch Herdr test
-- [Architecture decisions](docs/adr/) — durable design choices
-- [Domain language](CONTEXT.md) — precise runtime terminology
-- [Participation policy](CONTRIBUTING.md) — bug reports and project scope
-- [Security policy](SECURITY.md) — private vulnerability reporting
-- [Release policy](RELEASE.md) — gates, waivers, and trusted publishing
-- [Changelog](CHANGELOG.md) — version history
+- [Storage and recovery](docs/storage-recovery.md)
+- [Maintainer development](docs/maintainer-development.md) and [smoke test](docs/maintainer-smoke.md)
+- [Architecture decisions](docs/adr/) and [domain language](CONTEXT.md)
+- [Participation](CONTRIBUTING.md), [security](SECURITY.md), [releases](RELEASE.md), and [changelog](CHANGELOG.md)
 
 ## License
 
-[MIT](LICENSE) · [Security](SECURITY.md) · [Report bugs](CONTRIBUTING.md) · [Releases](RELEASE.md)
+[MIT](LICENSE)

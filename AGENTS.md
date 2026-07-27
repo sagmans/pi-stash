@@ -3,7 +3,7 @@
 This repository accepts bug reports only. External pull requests and feature
 requests are unsupported; read the [participation policy](CONTRIBUTING.md).
 
-## Maintainer paths
+## Maintainer workflow
 
 - Setup: run `npm ci --ignore-scripts` from the repository root.
 - Verification: run `npm run verify` while iterating and `npm run verify:ci`
