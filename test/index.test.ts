@@ -14,10 +14,10 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import install from "../index.ts";
 import { removeAssetDir } from "../src/assets.ts";
+import type { ExtensionAPI } from "../src/host.ts";
 import {
 	doAssetCleanup,
 	doClear,

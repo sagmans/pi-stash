@@ -161,11 +161,11 @@ const files = readdirSync(dir).filter((name) => name.endsWith(".json"));
 if (files.length !== 1) process.exit(1);
 const filePath = path.join(dir, files[0]);
 const file = JSON.parse(readFileSync(filePath, "utf8"));
-if (!Array.isArray(file.entries) || file.entries.length !== 1) process.exit(1);
+if (typeof file.cwd !== "string" || !Array.isArray(file.entries) || file.entries.length !== 1) process.exit(1);
 const entry = file.entries[0];
 if (entry.assetCount !== 1 || !entry.text.includes(canary) || entry.text.includes(sourceImage)) process.exit(1);
 const image = entry.text.split("\n").at(-1);
-const assetsRoot = `${path.join(dir, "assets")}${path.sep}`;
+const assetsRoot = `${path.join(dir, `${file.cwd}-assets`)}${path.sep}`;
 if (typeof image !== "string" || !image.startsWith(assetsRoot) || !existsSync(image) || !lstatSync(image).isFile()) process.exit(1);
 process.stdout.write(filePath);
 ' "$stash_dir" "$SMOKE_CANARY" "$clipboard_image")" || fail "durable text and image stash state is invalid"

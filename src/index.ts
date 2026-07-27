@@ -16,9 +16,8 @@
 
 import path from "node:path";
 
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
-
 import { persistTmpImages, removeAssetDir } from "./assets.ts";
+import type { ExtensionAPI, Theme } from "./host.ts";
 import {
 	beginAddIntent,
 	beginRestoreIntent,

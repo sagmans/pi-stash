@@ -19,6 +19,8 @@ test("Herdr smoke runs two packaged-extension launches without seeded stash stat
 
 test("Herdr smoke proves image persistence, removal, warnings, and cleanup", () => {
 	assert.match(SCRIPT, /assetCount !== 1/);
+	assert.match(SCRIPT, /path\.join\(dir, `\$\{file\.cwd\}-assets`\)/);
+	assert.doesNotMatch(SCRIPT, /path\.join\(dir, "assets"\)/);
 	assert.match(SCRIPT, /file\.entries\.length !== 0/);
 	assert.match(SCRIPT, /Warning\|ExperimentalWarning\|extension_error\|PI_STASH_SMOKE_FAILED/);
 	assert.match(SCRIPT, /herdr pane close/);

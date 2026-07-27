@@ -34,9 +34,10 @@ workflow. The Herdr smoke remains outside hosted CI; download its
 host for exact-artifact evidence. See
 [maintainer smoke test](maintainer-smoke.md).
 
-Do not hide audit output or weaken its severity threshold. Upstream findings in
-the Pi development dependency still require a verified fixed Pi pin or the
-release owner's narrow SHA-bound waiver under the release policy.
+Do not hide audit output or weaken its severity threshold. Keep the development
+graph limited to extension runtime imports; any upstream finding requires a
+verified fixed dependency pin or the release owner's narrow SHA-bound waiver
+under the release policy.
 
 Two Biome rules are disabled in `biome.json` to keep the development template
 aligned with pi-history. pi-stash does not currently rely on either exception;

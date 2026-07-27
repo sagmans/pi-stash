@@ -10,8 +10,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-
+import { resolveAgentDir } from "./host.ts";
 import { assertSafeEntryId } from "./types.ts";
 
 // POSIX filenames may not contain "/" or NUL; everything else is legal, so once
@@ -89,7 +88,7 @@ export function scopeLabel(cwd: string, homeDirectory?: string): string {
 	return `…${pathApi.sep}${segments.slice(-3).join(pathApi.sep)}`;
 }
 
-export function defaultStashBaseDir(agentDir: string = getAgentDir()): string {
+export function defaultStashBaseDir(agentDir: string = resolveAgentDir()): string {
 	return path.join(agentDir, "pi-stash");
 }
 

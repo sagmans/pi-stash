@@ -2,7 +2,7 @@
 
 import path from "node:path";
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "../../src/host.ts";
 
 const QUERY_EVENT = "prefix-keybindings:query";
 const AVAILABLE_EVENT = "prefix-keybindings:available";

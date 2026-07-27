@@ -11,8 +11,6 @@
 // StashOverlayComponent wires those helpers into a mutable body container and
 // drives list <-> detail mode swaps from handleInput.
 
-import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, keyText } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	Container,
@@ -25,6 +23,7 @@ import {
 	Text,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
+import { keyText, StashBorder, type Theme, type ThemeColor } from "./host.ts";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 import { entryLabel } from "./widget.ts";
@@ -256,7 +255,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		this.body = new Container();
 		this.footerText = new Text(listFooter(this.theme), 0, 0);
 
-		this.addChild(new DynamicBorder((s: string) => this.theme.fg("borderAccent", s)));
+		this.addChild(new StashBorder((text) => this.theme.fg("borderAccent", text)));
 		this.addChild(new Spacer(1));
 		this.addChild(this.headerText);
 		this.addChild(new Spacer(1));
@@ -265,7 +264,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		this.addChild(this.body);
 		this.addChild(new Spacer(1));
 		this.addChild(this.footerText);
-		this.addChild(new DynamicBorder((s: string) => this.theme.fg("borderAccent", s)));
+		this.addChild(new StashBorder((text) => this.theme.fg("borderAccent", text)));
 
 		this.updateBody();
 	}
