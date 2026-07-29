@@ -25,7 +25,7 @@ export const MAX_DRAFT_IMAGE_BYTES = 50 * BYTES_PER_MEBIBYTE;
 export const MAX_DRAFT_IMAGE_COUNT = 10;
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
-const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp)/giu;
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|bmp)(?![./\\\p{L}\p{N}_-])/giu;
 const PI_CLIPBOARD_IMAGE_PATTERN =
 	/^pi-clipboard-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:png|jpe?g|gif|webp|bmp)$/u;
 const MAX_IMAGE_PATH_LENGTH = 4096;

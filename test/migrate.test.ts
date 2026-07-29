@@ -207,3 +207,59 @@ test("migrateLegacyStash requires active persisted image ownership to be complet
 	);
 	assert.equal(existsSync(legacy.stashFile), true);
 });
+
+test("migrateLegacyStash migrates an asset held only by a restored lease", async () => {
+	const leaseId = "leased-entry";
+	const leaseBytes = Buffer.from("leased image");
+	const file = stashFile();
+	file.restoredAssetLeases = [leaseId];
+	const legacy = writeLegacy(file);
+	writeAsset(legacy, leaseId, leaseBytes);
+	const destination = resolveStashPaths(CWD, destinationBase);
+
+	const didMigrate = await migrateLegacyStash(CWD, destinationBase, legacyBase);
+
+	assert.equal(didMigrate, true);
+	assert.deepEqual(
+		readFileSync(path.join(destination.assetDir(leaseId), "00-image.png")),
+		leaseBytes,
+	);
+	assert.equal(existsSync(legacy.assetDir(leaseId)), false);
+	assert.deepEqual((await loadStashStore(destination)).restoredAssetLeaseIds, [leaseId]);
+});
+
+test("migrateLegacyStash invokes syncSourceParent after source removal and resumes on retry", async () => {
+	const entry: StashEntry = {
+		id: ACTIVE_ID,
+		text: "synced source parent",
+		createdAt: CREATED_AT,
+		assetCount: 1,
+	};
+	const legacy = writeLegacy(stashFile([entry]));
+	writeAsset(legacy, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, destinationBase);
+	const markerPath = `${destination.stashFile}.migration.json`;
+	const recorded: string[] = [];
+	const sentinel = new Error("sync source parent failed");
+
+	await assert.rejects(
+		() =>
+			migrateLegacyStash(CWD, destinationBase, legacyBase, {
+				syncSourceParent: async (directory: string) => {
+					recorded.push(directory);
+					throw sentinel;
+				},
+			}),
+		/sync source parent failed/,
+	);
+
+	assert.deepEqual(recorded, [path.dirname(legacy.stashFile)]);
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(legacy.assetDir(ACTIVE_ID)), false);
+	assert.equal(existsSync(markerPath), true);
+
+	assert.equal(await migrateLegacyStash(CWD, destinationBase, legacyBase), true);
+	assert.equal((await loadStashStore(destination)).entries[0]?.text, "synced source parent");
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(markerPath), false);
+});

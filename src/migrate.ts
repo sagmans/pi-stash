@@ -49,6 +49,7 @@ type MigrationMarker = {
 
 type MigrationOptions = {
 	failAfter?: "marker" | "assets" | "destination";
+	syncSourceParent?: (directory: string) => Promise<void>;
 };
 
 export function legacyStashBaseDir(homeDirectory: string = homedir()): string {
@@ -111,7 +112,7 @@ async function migrateLocked(
 	}
 	interruptAfter("destination", options);
 
-	await removeMigratedSource(source, marker);
+	await removeMigratedSource(source, marker, options.syncSourceParent ?? syncPrivateDirectory);
 	await unlink(markerPath);
 	await syncPrivateDirectory(path.dirname(markerPath));
 	return true;
@@ -131,11 +132,14 @@ function markerFor(source: StashPaths, destination: StashPaths, file: StashFile)
 
 function assetOwnership(file: StashFile): Pick<MigrationMarker, "assetIds" | "requiredAssetIds"> {
 	const activeIds = file.entries.map((entry) => entry.id);
+	const requiredActiveIds = file.entries
+		.filter((entry) => (entry.assetCount ?? 0) > 0)
+		.map((entry) => entry.id);
 	return {
-		assetIds: [...new Set([...activeIds, ...file.pendingAssetCleanup])],
-		requiredAssetIds: file.entries
-			.filter((entry) => (entry.assetCount ?? 0) > 0)
-			.map((entry) => entry.id),
+		assetIds: [
+			...new Set([...activeIds, ...file.restoredAssetLeases, ...file.pendingAssetCleanup]),
+		],
+		requiredAssetIds: [...new Set([...requiredActiveIds, ...file.restoredAssetLeases])],
 	};
 }
 
@@ -330,7 +334,11 @@ function sameFile(left: StashFile, right: StashFile): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function removeMigratedSource(source: StashPaths, marker: MigrationMarker): Promise<void> {
+async function removeMigratedSource(
+	source: StashPaths,
+	marker: MigrationMarker,
+	syncSourceParent: (directory: string) => Promise<void>,
+): Promise<void> {
 	for (const id of marker.assetIds) await removePrivateDirectory(source.assetDir(id));
 	try {
 		const legacy = await readPrivateTextFile(source.stashFile, "legacy stash file");
@@ -346,6 +354,7 @@ async function removeMigratedSource(source: StashPaths, marker: MigrationMarker)
 	await rmdir(source.assetsRoot).catch((error: unknown) => {
 		if (!hasErrorCode(error, "ENOENT") && !hasErrorCode(error, "ENOTEMPTY")) throw error;
 	});
+	await syncSourceParent(path.dirname(source.stashFile));
 }
 
 function interruptAfter(stage: MigrationOptions["failAfter"], options: MigrationOptions): void {

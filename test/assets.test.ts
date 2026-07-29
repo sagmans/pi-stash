@@ -136,6 +136,18 @@ test("persistTmpImages leaves repository and unrelated absolute paths untouched"
 	assert.equal(existsSync(assetDir), false);
 });
 
+test("persistTmpImages ignores a clipboard image whose filename is extended by .bak", async () => {
+	const image = clipboardImage("png");
+	const assetDir = path.join(scratch, "assets", "bak-suffix-entry");
+	const text = `keep ${image}.bak untouched`;
+
+	const result = await persistTmpImages({ text, assetDir, tmpDir: tmpRoot });
+
+	assert.equal(result.count, 0);
+	assert.equal(result.text, text);
+	assert.equal(existsSync(assetDir), false);
+});
+
 test("persistTmpImages rejects a missing recognized clipboard image", async () => {
 	const missing = missingClipboardImage();
 	const assetDir = path.join(scratch, "assets", "missing-entry");
