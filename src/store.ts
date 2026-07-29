@@ -9,7 +9,7 @@
 // hand-edit mistake never silently destroys saved stashes.
 
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -19,13 +19,15 @@ import type { StashPaths } from "./paths.ts";
 import {
 	assertPrivateDirectory,
 	ensurePrivateDirectory,
+	hasErrorCode,
 	PRIVATE_DIR_MODE,
 	type PrivateTextFile,
+	pathExists,
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
 	syncPrivateDirectory,
-	writePrivateTextFileExclusive,
+	writePrivateFileExclusive,
 } from "./private-fs.ts";
 import {
 	assertSafeEntryId,
@@ -183,10 +185,6 @@ export class StashStore {
 
 	async refresh(): Promise<void> {
 		await withStashLock(this.stashFile, () => this.reloadFresh());
-	}
-
-	resolve(selector: string | undefined): ResolvedEntry | undefined {
-		return resolveBySelector(this.file.entries, selector);
 	}
 
 	async add(input: AddEntryInput): Promise<StashEntry> {
@@ -464,7 +462,7 @@ export async function writeStashFile(
 	const data = `${JSON.stringify(file, null, 2)}\n`;
 	let tempCreated = false;
 	try {
-		await writePrivateTextFileExclusive(tempPath, data);
+		await writePrivateFileExclusive(tempPath, data);
 		tempCreated = true;
 		await rename(tempPath, filePath);
 		tempCreated = false;
@@ -566,7 +564,7 @@ async function writeLockOwner(lockPath: string): Promise<LockOwner> {
 		createdAt: new Date().toISOString(),
 	};
 	const ownerPath = path.join(lockPath, LOCK_OWNER_FILE);
-	await writePrivateTextFileExclusive(ownerPath, `${JSON.stringify(owner)}\n`);
+	await writePrivateFileExclusive(ownerPath, `${JSON.stringify(owner)}\n`);
 	return owner;
 }
 
@@ -733,16 +731,6 @@ function lockTimeoutMessage(lockPath: string, state: LockState): string {
 	}
 }
 
-async function pathExists(target: string): Promise<boolean> {
-	try {
-		await lstat(target);
-		return true;
-	} catch (error) {
-		if (hasErrorCode(error, "ENOENT")) return false;
-		throw error;
-	}
-}
-
 function isProcessAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
@@ -750,15 +738,6 @@ function isProcessAlive(pid: number): boolean {
 	} catch (error) {
 		return !hasErrorCode(error, "ESRCH");
 	}
-}
-
-function hasErrorCode(value: unknown, code: string): boolean {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"code" in value &&
-		(value as { code: unknown }).code === code
-	);
 }
 
 export { STASH_SCHEMA_VERSION };

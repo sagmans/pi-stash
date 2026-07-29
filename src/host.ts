@@ -15,10 +15,8 @@ const FILE_URL_PREFIX = "file://";
 const MAC_ALT_KEY = "alt";
 const MAC_ALT_LABEL = "option";
 
-export type ThemeColor = string;
-
 export type Theme = {
-	fg(color: ThemeColor, text: string): string;
+	fg(color: string, text: string): string;
 	bold(text: string): string;
 };
 

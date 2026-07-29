@@ -62,13 +62,11 @@ export async function readPrivateTextFile(
 	label = "stash file",
 ): Promise<PrivateTextFile> {
 	const before = await lstat(filePath);
-	assertRegularFile(before, label);
-	assertCurrentUserOwns(before, label);
+	assertRegularOwnedFile(before, label);
 	const handle = await open(filePath, constants.O_RDONLY | NO_FOLLOW_FLAG);
 	try {
 		const opened = await handle.stat();
-		assertRegularFile(opened, label);
-		assertCurrentUserOwns(opened, label);
+		assertRegularOwnedFile(opened, label);
 		assertSameIdentity(before, opened, label);
 		await handle.chmod(PRIVATE_FILE_MODE);
 		return {
@@ -80,12 +78,15 @@ export async function readPrivateTextFile(
 	}
 }
 
-export async function writePrivateTextFileExclusive(filePath: string, data: string): Promise<void> {
+export async function writePrivateFileExclusive(
+	filePath: string,
+	data: string | Uint8Array,
+): Promise<void> {
 	const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
 	const handle = await open(filePath, flags, PRIVATE_FILE_MODE);
 	let succeeded = false;
 	try {
-		await handle.writeFile(data, "utf8");
+		await handle.writeFile(data);
 		await handle.chmod(PRIVATE_FILE_MODE);
 		await handle.sync();
 		succeeded = true;
@@ -164,9 +165,10 @@ function assertDirectory(stats: Stats, label: string): void {
 	if (!stats.isDirectory()) throw new Error(`${label} must be a directory`);
 }
 
-function assertRegularFile(stats: Stats, label: string): void {
+export function assertRegularOwnedFile(stats: Stats, label: string): void {
 	if (stats.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
 	if (!stats.isFile()) throw new Error(`${label} must be a regular file`);
+	assertCurrentUserOwns(stats, label);
 }
 
 function assertCurrentUserOwns(stats: Stats, label: string): void {
@@ -186,7 +188,17 @@ function identityOf(stats: Stats): FileIdentity {
 	return { dev: stats.dev, ino: stats.ino };
 }
 
-function hasErrorCode(value: unknown, code: string): boolean {
+export async function pathExists(target: string): Promise<boolean> {
+	try {
+		await lstat(target);
+		return true;
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return false;
+		throw error;
+	}
+}
+
+export function hasErrorCode(value: unknown, code: string): boolean {
 	return (
 		typeof value === "object" &&
 		value !== null &&

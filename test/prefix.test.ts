@@ -8,7 +8,7 @@ type Handler = (payload?: unknown) => void;
 function createBus() {
 	const handlers = new Map<string, Set<Handler>>();
 	const emitted: Array<{ event: string; payload?: unknown }> = [];
-	const bus = {
+	return {
 		emit(event: string, payload?: unknown) {
 			emitted.push({ event, payload });
 			handlers.get(event)?.forEach((handler) => {
@@ -16,20 +16,13 @@ function createBus() {
 			});
 		},
 		on(event: string, handler: Handler) {
-			let set = handlers.get(event);
-			if (!set) {
-				set = new Set();
-				handlers.set(event, set);
-			}
+			const set = handlers.get(event) ?? new Set();
 			set.add(handler);
-			const activeSet = set;
-			return () => {
-				activeSet.delete(handler);
-			};
+			handlers.set(event, set);
+			return () => set.delete(handler);
 		},
 		emitted,
 	};
-	return bus;
 }
 
 function createScheduler() {
@@ -52,22 +45,18 @@ function createScheduler() {
 	};
 }
 
-function claim(key: string, eventId: string, fired: string[]) {
-	return { key, eventId, onFire: () => fired.push(key) };
-}
-
 const REQUESTER = "@sagmans/pi-stash:test-instance";
 
 function start(
 	bus: ReturnType<typeof createBus>,
-	claims: ReturnType<typeof claim>[],
 	overrides: Partial<Parameters<typeof startStashBinding>[0]> = {},
 ) {
 	const scheduler = createScheduler();
 	const cleanup = startStashBinding({
 		events: bus,
 		requester: REQUESTER,
-		claims,
+		onStash: () => {},
+		onList: () => {},
 		onInert: () => {},
 		schedule: scheduler.schedule,
 		...overrides,
@@ -77,7 +66,7 @@ function start(
 
 test("queries prefix-keybindings with the namespaced instance identity", () => {
 	const bus = createBus();
-	const { cleanup } = start(bus, []);
+	const { cleanup } = start(bus);
 
 	assert.deepEqual(bus.emitted[0], {
 		event: "prefix-keybindings:query",
@@ -86,21 +75,19 @@ test("queries prefix-keybindings with the namespaced instance identity", () => {
 	cleanup();
 });
 
-test("registers namespaced claims and reports the effective prefix", () => {
+test("registers fixed namespaced actions and reports the effective prefix", () => {
 	const bus = createBus();
-	const fired: string[] = [];
 	const prefixes: string[] = [];
-	const { cleanup, scheduler } = start(
-		bus,
-		[claim("s", `${REQUESTER}:stash`, fired), claim("S", `${REQUESTER}:list`, fired)],
-		{ onActive: (prefixKey) => prefixes.push(prefixKey) },
-	);
+	const { cleanup, scheduler } = start(bus, {
+		onActive: (prefixKey) => prefixes.push(prefixKey),
+	});
 
 	bus.emit("prefix-keybindings:available", { available: true, prefixKey: "ctrl+x" });
 
-	const registers = bus.emitted.filter((entry) => entry.event === "prefix-keybindings:register");
 	assert.deepEqual(
-		registers.map((entry) => entry.payload),
+		bus.emitted
+			.filter((entry) => entry.event === "prefix-keybindings:register")
+			.map((entry) => entry.payload),
 		[
 			{ requester: REQUESTER, key: "s", eventId: `${REQUESTER}:stash` },
 			{ requester: REQUESTER, key: "S", eventId: `${REQUESTER}:list` },
@@ -111,17 +98,21 @@ test("registers namespaced claims and reports the effective prefix", () => {
 	cleanup();
 });
 
-test("fires only the action owned by this instance and key", () => {
+test("fires only actions owned by this instance and key", () => {
 	const bus = createBus();
 	const fired: string[] = [];
-	const { cleanup } = start(bus, [claim("s", `${REQUESTER}:stash`, fired)]);
+	const { cleanup } = start(bus, {
+		onStash: () => fired.push("stash"),
+		onList: () => fired.push("list"),
+	});
 	bus.emit("prefix-keybindings:available", { available: true, prefixKey: "ctrl+x" });
 
 	bus.emit(`${REQUESTER}:stash`, { requester: "other-extension", key: "s" });
 	bus.emit(`${REQUESTER}:stash`, { requester: REQUESTER, key: "S" });
 	bus.emit(`${REQUESTER}:stash`, { requester: REQUESTER, key: "s" });
+	bus.emit(`${REQUESTER}:list`, { requester: REQUESTER, key: "S" });
 
-	assert.deepEqual(fired, ["s"]);
+	assert.deepEqual(fired, ["stash", "list"]);
 	cleanup();
 });
 
@@ -131,11 +122,13 @@ test("duplicate instances dispatch only the registry owner", () => {
 	const secondFired: string[] = [];
 	const firstRequester = "@sagmans/pi-stash:first";
 	const secondRequester = "@sagmans/pi-stash:second";
-	const first = start(bus, [claim("s", `${firstRequester}:stash`, firstFired)], {
+	const first = start(bus, {
 		requester: firstRequester,
+		onStash: () => firstFired.push("stash"),
 	});
-	const second = start(bus, [claim("s", `${secondRequester}:stash`, secondFired)], {
+	const second = start(bus, {
 		requester: secondRequester,
+		onStash: () => secondFired.push("stash"),
 	});
 	bus.emit("prefix-keybindings:available", { available: true, prefixKey: "ctrl+x" });
 	const owner = bus.emitted.find(
@@ -146,7 +139,7 @@ test("duplicate instances dispatch only the registry owner", () => {
 
 	bus.emit(owner.eventId, { requester: owner.requester, key: owner.key });
 
-	assert.deepEqual(firstFired, ["s"]);
+	assert.deepEqual(firstFired, ["stash"]);
 	assert.deepEqual(secondFired, []);
 	first.cleanup();
 	second.cleanup();
@@ -156,28 +149,29 @@ test("reload detaches old callbacks and accepts a changed prefix", () => {
 	const bus = createBus();
 	const fired: string[] = [];
 	const prefixes: string[] = [];
-	const old = start(bus, [claim("s", `${REQUESTER}:old`, fired)], {
+	const old = start(bus, {
+		onStash: () => fired.push("old"),
 		onActive: (prefixKey) => prefixes.push(prefixKey),
 	});
 	bus.emit("prefix-keybindings:available", { available: true, prefixKey: "ctrl+x" });
 	old.cleanup();
 
-	const replacement = start(bus, [claim("s", `${REQUESTER}:new`, fired)], {
+	const replacement = start(bus, {
+		onStash: () => fired.push("new"),
 		onActive: (prefixKey) => prefixes.push(prefixKey),
 	});
 	bus.emit("prefix-keybindings:available", { available: true, prefixKey: "alt+p" });
-	bus.emit(`${REQUESTER}:old`, { requester: REQUESTER, key: "s" });
-	bus.emit(`${REQUESTER}:new`, { requester: REQUESTER, key: "s" });
+	bus.emit(`${REQUESTER}:stash`, { requester: REQUESTER, key: "s" });
 
 	assert.deepEqual(prefixes, ["ctrl+x", "alt+p"]);
-	assert.deepEqual(fired, ["s"]);
+	assert.deepEqual(fired, ["new"]);
 	replacement.cleanup();
 });
 
 test("ignores malformed and competing availability announcements after activation", () => {
 	const bus = createBus();
 	const prefixes: string[] = [];
-	const { cleanup } = start(bus, [], {
+	const { cleanup } = start(bus, {
 		onActive: (prefixKey) => prefixes.push(prefixKey),
 	});
 
@@ -196,7 +190,8 @@ test("goes inert when the binding provider is disabled", () => {
 	const cleanup = startStashBinding({
 		events: bus,
 		requester: REQUESTER,
-		claims: [],
+		onStash: () => {},
+		onList: () => {},
 		onInert: () => {
 			inert += 1;
 		},
@@ -222,7 +217,8 @@ test("cleanup cancels timeout, listeners, and callbacks", () => {
 	const cleanup = startStashBinding({
 		events: bus,
 		requester: REQUESTER,
-		claims: [claim("s", `${REQUESTER}:stash`, fired)],
+		onStash: () => fired.push("stash"),
+		onList: () => fired.push("list"),
 		onInert: () => {
 			inert += 1;
 		},

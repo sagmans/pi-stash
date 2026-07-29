@@ -1,15 +1,5 @@
-// Stash overlay, built on pi's model-picker pattern.
-//
-// The component extends Container and composes pi-tui primitives (DynamicBorder,
-// Text, Input, Spacer) exactly like ModelSelectorComponent, so it inherits the
-// framed, themed, keybinding-respecting look users already know. Two extras the
-// model picker lacks: a detail mode for previewing a multi-line draft, and a
-// non-closing "drop" action.
-//
-// Pure helpers (relativeAge / listRow / headerLine / *Hint / detailLines) take a
-// narrow OverlayTheme so they stay unit-testable without a terminal. The
-// StashOverlayComponent wires those helpers into a mutable body container and
-// drives list <-> detail mode swaps from handleInput.
+// Searchable stash overlay with cancellable refresh/drop settlement.
+// Pure render helpers keep terminal behavior testable without a live TUI.
 
 import {
 	type Component,
@@ -23,13 +13,12 @@ import {
 	Text,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { keyText, StashBorder, type Theme, type ThemeColor } from "./host.ts";
+import { keyText, StashBorder, type Theme } from "./host.ts";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 import { entryLabel } from "./widget.ts";
 
 export type OverlayTheme = Pick<Theme, "fg" | "bold">;
-export type { ThemeColor };
 
 /** Indexed item: `index` is the canonical stash position (0 = newest). */
 export type IndexedEntry = { entry: StashEntry; index: number };
@@ -68,20 +57,15 @@ export function relativeAge(createdAt: number, now: number): string {
 }
 
 /** One list row. Selected rows are accented and prefixed with a marker. */
-export function listRow(
-	item: IndexedEntry,
-	selected: boolean,
-	theme: OverlayTheme,
-	labelWidth = LABEL_WIDTH,
-): string {
+export function listRow(item: IndexedEntry, selected: boolean, theme: OverlayTheme): string {
 	const prefix = selected ? theme.fg("accent", "▸ ") : "  ";
 	const indexTag = theme.fg("dim", `[${item.index}]`);
-	const label = entryLabel(item.entry, labelWidth);
+	const label = entryLabel(item.entry, LABEL_WIDTH);
 	const body = selected ? theme.fg("accent", label) : label;
 	const count = item.entry.assetCount ?? 0;
 	const img = count > 0 ? ` ${theme.fg("success", `⬗${count}`)}` : "";
 	const age = theme.fg("muted", relativeAge(item.entry.createdAt, Date.now()));
-	return `${truncateToWidth(`${prefix}${indexTag} ${body}${img}`, labelWidth + 16)} ${age}`;
+	return `${truncateToWidth(`${prefix}${indexTag} ${body}${img}`, LABEL_WIDTH + 16)} ${age}`;
 }
 
 export function headerLine(count: number, cwdLabel: string, theme: OverlayTheme): string {
@@ -198,6 +182,11 @@ class DraftPreviewComponent implements Component {
 	}
 }
 
+type DetailState = {
+	item: IndexedEntry;
+	preview: DraftPreviewComponent;
+};
+
 export class StashOverlayComponent extends Container implements Focusable {
 	private _focused = false;
 	private readonly tui: { requestRender(): void };
@@ -210,9 +199,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private filtered: IndexedEntry[];
 	private selected = 0;
 	private query = "";
-	private mode: "list" | "detail" = "list";
-	private currentDetail: IndexedEntry | undefined;
-	private currentPreview: DraftPreviewComponent | undefined;
+	private detail: DetailState | undefined;
 	private dropInProgress = false;
 	private cancelled = false;
 	private pendingDrop: Promise<void> = Promise.resolve();
@@ -273,8 +260,8 @@ export class StashOverlayComponent extends Container implements Focusable {
 		if (this.cancelled || this.dropInProgress) return;
 		if (matchesKey(data, "f5")) {
 			this.requestRefresh();
-		} else if (this.mode === "list") this.handleListInput(data);
-		else this.handleDetailInput(data);
+		} else if (this.detail) this.handleDetailInput(data);
+		else this.handleListInput(data);
 		this.tui.requestRender();
 	}
 
@@ -299,8 +286,9 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	private handleDetailInput(data: string): void {
-		const current = this.currentDetail;
-		if (!current) return;
+		const detail = this.detail;
+		if (!detail) return;
+		const { item: current, preview } = detail;
 		if (this.matches(data, "tui.select.confirm")) {
 			this.callbacks.onRestore(current.entry);
 		} else if (data === "d" && !this.dropInProgress) {
@@ -308,17 +296,17 @@ export class StashOverlayComponent extends Container implements Focusable {
 		} else if (this.matches(data, "tui.select.cancel") || matchesKey(data, "left")) {
 			this.backToList();
 		} else if (this.matches(data, "tui.select.up")) {
-			this.currentPreview?.scroll(-1);
+			preview.scroll(-1);
 		} else if (this.matches(data, "tui.select.down")) {
-			this.currentPreview?.scroll(1);
+			preview.scroll(1);
 		} else if (this.matches(data, "tui.select.pageUp")) {
-			this.currentPreview?.page(-1);
+			preview.page(-1);
 		} else if (this.matches(data, "tui.select.pageDown")) {
-			this.currentPreview?.page(1);
+			preview.page(1);
 		} else if (matchesKey(data, "home")) {
-			this.currentPreview?.toStart();
+			preview.toStart();
 		} else if (matchesKey(data, "end")) {
-			this.currentPreview?.toEnd();
+			preview.toEnd();
 		}
 	}
 
@@ -337,22 +325,22 @@ export class StashOverlayComponent extends Container implements Focusable {
 			: Math.min(this.selected, Math.max(0, this.filtered.length - 1));
 	}
 
+	private createDetail(item: IndexedEntry): DetailState {
+		return {
+			item,
+			preview: new DraftPreviewComponent(detailBody(item, this.theme).join("\n"), this.theme),
+		};
+	}
+
 	private openDetail(): void {
 		const item = this.filtered[this.selected];
 		if (!item) return;
-		this.mode = "detail";
-		this.currentDetail = item;
-		this.currentPreview = new DraftPreviewComponent(
-			detailBody(item, this.theme).join("\n"),
-			this.theme,
-		);
+		this.detail = this.createDetail(item);
 		this.updateBody();
 	}
 
 	private backToList(): void {
-		this.mode = "list";
-		this.currentDetail = undefined;
-		this.currentPreview = undefined;
+		this.detail = undefined;
 		this.updateBody();
 	}
 
@@ -404,25 +392,15 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	private replaceEntries(entries: readonly StashEntry[]): void {
-		const selectedId = this.currentDetail?.entry.id ?? this.filtered[this.selected]?.entry.id;
+		const selectedId = this.detail?.item.entry.id ?? this.filtered[this.selected]?.entry.id;
 		this.items = entries.map((entry, index) => ({ entry, index }));
 		this.filter(this.searchInput.getValue());
 		const selected = this.filtered.findIndex((item) => item.entry.id === selectedId);
 		if (selected >= 0) this.selected = selected;
 
-		if (this.currentDetail) {
+		if (this.detail) {
 			const refreshedDetail = this.items.find((item) => item.entry.id === selectedId);
-			if (refreshedDetail) {
-				this.currentDetail = refreshedDetail;
-				this.currentPreview = new DraftPreviewComponent(
-					detailBody(refreshedDetail, this.theme).join("\n"),
-					this.theme,
-				);
-			} else {
-				this.mode = "list";
-				this.currentDetail = undefined;
-				this.currentPreview = undefined;
-			}
+			this.detail = refreshedDetail ? this.createDetail(refreshedDetail) : undefined;
 		}
 		this.updateBody();
 	}
@@ -438,7 +416,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private updateBody(): void {
 		this.headerText.setText(headerLine(this.items.length, this.cwdLabel, this.theme));
 		this.body.clear();
-		if (this.mode === "list") {
+		if (!this.detail) {
 			this.footerText.setText(listFooter(this.theme));
 			this.renderListBody();
 		} else {
@@ -471,26 +449,19 @@ export class StashOverlayComponent extends Container implements Focusable {
 	}
 
 	private renderDetailBody(): void {
-		const item = this.currentDetail;
-		if (!item) return;
-		this.body.addChild(new Text(detailHeader(item, this.theme), 0, 0));
-		this.body.addChild(new Text(this.theme.fg("dim", ` id ${item.entry.id.slice(0, 4)}`), 0, 0));
-		this.currentPreview ??= new DraftPreviewComponent(
-			detailBody(item, this.theme).join("\n"),
-			this.theme,
+		const detail = this.detail;
+		if (!detail) return;
+		this.body.addChild(new Text(detailHeader(detail.item, this.theme), 0, 0));
+		this.body.addChild(
+			new Text(this.theme.fg("dim", ` id ${detail.item.entry.id.slice(0, 4)}`), 0, 0),
 		);
-		this.body.addChild(this.currentPreview);
+		this.body.addChild(detail.preview);
 	}
 
 	override invalidate(): void {
 		// Rebuild themed content: caches hold ANSI from the prior theme.
 		super.invalidate();
-		if (this.currentDetail) {
-			this.currentPreview = new DraftPreviewComponent(
-				detailBody(this.currentDetail, this.theme).join("\n"),
-				this.theme,
-			);
-		}
+		if (this.detail) this.detail = this.createDetail(this.detail.item);
 		this.updateBody();
 	}
 }

@@ -13,11 +13,14 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import {
+	assertRegularOwnedFile,
 	ensurePrivateDirectory,
+	hasErrorCode,
+	pathExists,
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
-	writePrivateTextFileExclusive,
+	writePrivateFileExclusive,
 } from "../src/private-fs.ts";
 
 let scratch: string;
@@ -46,12 +49,15 @@ test("readPrivateTextFile rejects a link and preserves its target", async () => 
 	assert.equal(readFileSync(target, "utf8"), "secret");
 });
 
-test("writePrivateTextFileExclusive never overwrites an existing file", async () => {
-	const file = path.join(scratch, "existing");
-	writeFileSync(file, "keep");
+test("writePrivateFileExclusive writes text and bytes without overwriting", async () => {
+	const textFile = path.join(scratch, "text");
+	const bytesFile = path.join(scratch, "bytes");
+	await writePrivateFileExclusive(textFile, "text");
+	await writePrivateFileExclusive(bytesFile, Buffer.from([0, 1, 2]));
 
-	await assert.rejects(() => writePrivateTextFileExclusive(file, "replace"), { code: "EEXIST" });
-	assert.equal(readFileSync(file, "utf8"), "keep");
+	await assert.rejects(() => writePrivateFileExclusive(textFile, "replace"), { code: "EEXIST" });
+	assert.equal(readFileSync(textFile, "utf8"), "text");
+	assert.deepEqual(readFileSync(bytesFile), Buffer.from([0, 1, 2]));
 });
 
 test("quarantinePrivateFile preserves collisions and removes only its source", async () => {
@@ -67,6 +73,18 @@ test("quarantinePrivateFile preserves collisions and removes only its source", a
 	assert.equal(readFileSync(collision, "utf8"), "older evidence");
 	assert.equal(readFileSync(quarantined, "utf8"), "broken");
 	assert.equal(existsSync(file), false);
+});
+
+test("shared validation helpers preserve lstat and ownership semantics", async () => {
+	const missing = path.join(scratch, "missing");
+	assert.equal(await pathExists(missing), false);
+	assert.equal(hasErrorCode({ code: "ENOENT" }, "ENOENT"), true);
+	assert.equal(hasErrorCode(null, "ENOENT"), false);
+
+	const regularFile = path.join(scratch, "regular");
+	writeFileSync(regularFile, "keep");
+	assertRegularOwnedFile(statSync(regularFile), "test file");
+	assert.throws(() => assertRegularOwnedFile(statSync(scratch), "test file"), /regular file/);
 });
 
 test("removePrivateDirectory ignores absence but rejects regular files", async () => {

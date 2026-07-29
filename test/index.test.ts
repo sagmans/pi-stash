@@ -16,7 +16,6 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import install from "../index.ts";
-import { removeAssetDir } from "../src/assets.ts";
 import type { ExtensionAPI } from "../src/host.ts";
 import {
 	doAssetCleanup,
@@ -34,12 +33,11 @@ import {
 import { beginAddIntent, beginRestoreIntent } from "../src/intents.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
 import { resolveStashPaths } from "../src/paths.ts";
+import { removePrivateDirectory as removeAssetDir } from "../src/private-fs.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const DEAD_PROCESS_ID = 2_147_483_647;
-const UI_OPEN_WAIT_ATTEMPTS = 100;
-const UI_OPEN_WAIT_MS = 10;
 const STASH_COMMAND_NAMES = [
 	"stash",
 	"stash-list",
@@ -167,6 +165,8 @@ function extensionHarness(): {
 type ExtensionHandler = (event: unknown, ctx: unknown) => unknown;
 
 let baseDir: string;
+let previousAgentDir: string | undefined;
+let previousHome: string | undefined;
 
 test("isSupportedSession activates only interactive TUI sessions", () => {
 	assert.equal(isSupportedSession({ mode: "tui", hasUI: true }), true);
@@ -178,11 +178,19 @@ test("isSupportedSession activates only interactive TUI sessions", () => {
 beforeEach(() => {
 	baseDir = mkdtempSync(path.join(tmpdir(), "pi-stash-index-"));
 	directTempImages.length = 0;
+	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	previousHome = process.env.HOME;
+	process.env.PI_CODING_AGENT_DIR = baseDir;
+	process.env.HOME = baseDir;
 });
 
 afterEach(() => {
 	rmSync(baseDir, { recursive: true, force: true });
 	for (const image of directTempImages) rmSync(image, { force: true });
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	if (previousHome === undefined) delete process.env.HOME;
+	else process.env.HOME = previousHome;
 });
 
 function clipboardImage(): string {
@@ -210,6 +218,16 @@ function loadReleaseFailingStore(paths: ReturnType<typeof resolveStashPaths>) {
 	return loadStashStore(paths, Date.now, async (filePath, file) => {
 		writeFileSync(filePath, JSON.stringify(file));
 		poisonLockOwner(paths);
+	});
+}
+
+function captureOverlay(ui: StashUi): Promise<StashOverlayComponent> {
+	return new Promise((opened) => {
+		ui.custom = (factory) =>
+			new Promise((done) => {
+				const overlay = factory({ requestRender: () => {} }, undefined, undefined, done);
+				opened(overlay as StashOverlayComponent);
+			});
 	});
 }
 
@@ -633,24 +651,11 @@ test("openOverlay resolves when shutdown aborts an open custom UI", async () => 
 	const store = await loadStashStore(paths);
 	await store.add({ text: "stashed" });
 	const ui = fakeUi();
-	let opened = false;
-	ui.custom = (factory) =>
-		new Promise((resolve) => {
-			opened = true;
-			factory({ requestRender: () => {} }, undefined, undefined, resolve);
-		});
+	const overlayOpened = captureOverlay(ui);
 	const controller = new AbortController();
 
-	const opening = openOverlay(
-		{ cwd: "/cancel-overlay", mode: "tui", hasUI: true, ui },
-		store,
-		paths,
-		controller.signal,
-	);
-	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !opened; attempt += 1) {
-		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
-	}
-	assert.equal(opened, true);
+	const opening = openOverlay({ cwd: "/cancel-overlay", ui }, store, paths, controller.signal);
+	await overlayOpened;
 	controller.abort();
 	await opening;
 
@@ -663,22 +668,9 @@ test("open overlay refreshes concurrent additions and reports quarantined corrup
 	await store.add({ text: "initial" });
 	const writer = await loadStashStore(paths);
 	const ui = fakeUi();
-	let overlay: StashOverlayComponent | undefined;
-	ui.custom = (factory) =>
-		new Promise((resolve) => {
-			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
-				| StashOverlayComponent
-				| undefined;
-		});
-	const opening = openOverlay(
-		{ cwd: "/concurrent-overlay-refresh", mode: "tui", hasUI: true, ui },
-		store,
-		paths,
-	);
-	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
-		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
-	}
-	assert.ok(overlay);
+	const overlayOpened = captureOverlay(ui);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-refresh", ui }, store, paths);
+	const overlay = await overlayOpened;
 
 	await writer.add({ text: "external addition" });
 	overlay.handleInput("\u001b[15~");
@@ -702,22 +694,9 @@ test("overlay treats an externally removed drop as a benign authoritative refres
 	const stored = await store.add({ text: "removed elsewhere" });
 	const writer = await loadStashStore(paths);
 	const ui = fakeUi();
-	let overlay: StashOverlayComponent | undefined;
-	ui.custom = (factory) =>
-		new Promise((resolve) => {
-			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
-				| StashOverlayComponent
-				| undefined;
-		});
-	const opening = openOverlay(
-		{ cwd: "/concurrent-overlay-drop", mode: "tui", hasUI: true, ui },
-		store,
-		paths,
-	);
-	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
-		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
-	}
-	assert.ok(overlay);
+	const overlayOpened = captureOverlay(ui);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-drop", ui }, store, paths);
+	const overlay = await overlayOpened;
 
 	await writer.drop(stored.id);
 	overlay.handleInput("\t");
@@ -739,22 +718,9 @@ test("overlay preserves rows and reports real lock and mutation failures", async
 	const store = await loadStashStore(paths);
 	await store.add({ text: "preserved row" });
 	const ui = fakeUi();
-	let overlay: StashOverlayComponent | undefined;
-	ui.custom = (factory) =>
-		new Promise((resolve) => {
-			overlay = factory({ requestRender: () => {} }, undefined, undefined, resolve) as
-				| StashOverlayComponent
-				| undefined;
-		});
-	const opening = openOverlay(
-		{ cwd: "/concurrent-overlay-lock", mode: "tui", hasUI: true, ui },
-		store,
-		paths,
-	);
-	for (let attempt = 0; attempt < UI_OPEN_WAIT_ATTEMPTS && !overlay; attempt += 1) {
-		await new Promise((resolve) => setTimeout(resolve, UI_OPEN_WAIT_MS));
-	}
-	assert.ok(overlay);
+	const overlayOpened = captureOverlay(ui);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-lock", ui }, store, paths);
+	const overlay = await overlayOpened;
 	mkdirSync(`${paths.stashFile}.lock`);
 	writeFileSync(path.join(`${paths.stashFile}.lock`, "owner.json"), "placeholder");
 	poisonLockOwner(paths);
@@ -904,11 +870,7 @@ test("doClear is a no-op when the user declines", async () => {
 
 test("registered commands execute the documented stash workflows", async () => {
 	const { pi, handlers, commands } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	const previousHome = process.env.HOME;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	process.env.HOME = baseDir;
-	try {
+	{
 		install(pi);
 		assert.deepEqual([...commands.keys()], [...STASH_COMMAND_NAMES]);
 		const ui = fakeUi({ editorText: "saved through command" });
@@ -950,11 +912,6 @@ test("registered commands execute the documented stash workflows", async () => {
 		await commands.get("stash-clear")?.handler("", ctx);
 		assert.equal((await loadStashStore(paths)).entryCount, 0);
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		if (previousHome === undefined) delete process.env.HOME;
-		else process.env.HOME = previousHome;
 	}
 });
 
@@ -997,9 +954,7 @@ test("refreshWidget renders every row within the current terminal width", async 
 
 test("session startup shows the effective prefix binding in the stash widget", async () => {
 	const { pi, handlers } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	try {
+	{
 		const cwd = "/binding-hint";
 		const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
 		await (await loadStashStore(paths)).add({ text: "saved draft" });
@@ -1011,17 +966,12 @@ test("session startup shows the effective prefix binding in the stash widget", a
 
 		assert.ok(ui.widgets.get("pi-stash")?.[0]?.includes("ctrl+x then shift+s to open"));
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("duplicate extension instances perform one prefix mutation", async () => {
 	const { pi, handlers, events } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	try {
+	{
 		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy-one") });
 		const firstStart = handlers.get("session_start");
 		const firstShutdown = handlers.get("session_shutdown");
@@ -1041,17 +991,12 @@ test("duplicate extension instances perform one prefix mutation", async () => {
 
 		const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
 		assert.equal((await loadStashStore(paths)).entryCount, 1);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("session shutdown cancels prefix operations that have not started", async () => {
 	const { pi, handlers, events } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	try {
+	{
 		installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
 		const ui = fakeUi();
 		const ctx = { cwd: "/queued-repo", mode: "tui", hasUI: true, ui };
@@ -1066,17 +1011,12 @@ test("session shutdown cancels prefix operations that have not started", async (
 		const store = await loadStashStore(paths);
 		assert.equal(store.entryCount, 0);
 		assert.equal(ui.widgets.has("pi-stash"), false);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("unsupported schema stays unavailable across startup and every command", async () => {
 	const { pi, handlers, commands } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	try {
+	{
 		const cwd = "/future-schema";
 		const legacyBaseDir = path.join(baseDir, "legacy");
 		const legacyPaths = resolveStashPaths(cwd, legacyBaseDir);
@@ -1114,17 +1054,12 @@ test("unsupported schema stays unavailable across startup and every command", as
 		assert.equal(readFileSync(paths.stashFile, "utf8"), original);
 		assert.equal((await loadStashStore(legacyPaths)).entries[0]?.text, "legacy stays put");
 		assert.equal(readdirSync(path.dirname(paths.stashFile)).length, 1);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("session startup retries durable asset cleanup", async () => {
 	const { pi, handlers } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = baseDir;
-	try {
+	{
 		const cwd = "/cleanup-retry";
 		const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
 		const seed = await loadStashStore(paths);
@@ -1141,19 +1076,15 @@ test("session startup retries durable asset cleanup", async () => {
 		assert.equal(existsSync(paths.assetDir(entry.id)), false);
 		assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("session startup migrates the exact legacy worktree scope", async () => {
 	const { pi, handlers } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = path.join(baseDir, "configured-agent");
 	const legacyBaseDir = path.join(baseDir, "legacy", "pi-stash");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
+	{
 		const cwd = "/legacy-migration";
 		const legacyPaths = resolveStashPaths(cwd, legacyBaseDir);
 		const legacy = await loadStashStore(legacyPaths);
@@ -1169,19 +1100,15 @@ test("session startup migrates the exact legacy worktree scope", async () => {
 		assert.equal(existsSync(legacyPaths.stashFile), false);
 		assert.ok(ui.notifs.some((notification) => notification.message.includes("Migrated")));
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("session startup reports a legacy migration conflict and stays inactive", async () => {
 	const { pi, handlers } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = path.join(baseDir, "configured-agent");
 	const legacyBaseDir = path.join(baseDir, "legacy", "pi-stash");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
+	{
 		const cwd = "/legacy-conflict";
 		await (await loadStashStore(resolveStashPaths(cwd, legacyBaseDir))).add({ text: "legacy" });
 		await (await loadStashStore(resolveStashPaths(cwd, path.join(agentDir, "pi-stash")))).add({
@@ -1200,18 +1127,14 @@ test("session startup reports a legacy migration conflict and stays inactive", a
 			),
 		);
 		assert.equal(ui.widgets.has("pi-stash"), false);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });
 
 test("session startup reconciles interrupted add and restore mutations", async () => {
 	const { pi, handlers } = extensionHarness();
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = path.join(baseDir, "configured-agent");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
-	try {
+	{
 		const cwd = "/intent-recovery";
 		const paths = resolveStashPaths(cwd, path.join(agentDir, "pi-stash"));
 		const store = await loadStashStore(paths);
@@ -1238,8 +1161,5 @@ test("session startup reconciles interrupted add and restore mutations", async (
 		assert.equal(existsSync(paths.assetDir(abandonedId)), false);
 		assert.ok(ui.notifs.some((notification) => notification.message.includes("Recovered")));
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	}
 });

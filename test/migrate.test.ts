@@ -69,9 +69,9 @@ function writeAsset(paths: ReturnType<typeof resolveStashPaths>, id: string, byt
 test("migrateLegacyStash ignores an absent exact legacy scope", async () => {
 	mkdirSync(path.join(legacyBase, "unrelated"), { recursive: true });
 
-	const result = await migrateLegacyStash(CWD, destinationBase, legacyBase);
+	const didMigrate = await migrateLegacyStash(CWD, destinationBase, legacyBase);
 
-	assert.equal(result.kind, "not-needed");
+	assert.equal(didMigrate, false);
 	assert.equal(existsSync(resolveStashPaths(CWD, destinationBase).stashFile), false);
 	assert.equal(existsSync(path.join(legacyBase, "unrelated")), true);
 });
@@ -80,10 +80,10 @@ test("migrateLegacyStash moves an empty stash repeatably", async () => {
 	const legacy = writeLegacy(stashFile());
 	const destination = resolveStashPaths(CWD, destinationBase);
 
-	assert.equal((await migrateLegacyStash(CWD, destinationBase, legacyBase)).kind, "migrated");
+	assert.equal(await migrateLegacyStash(CWD, destinationBase, legacyBase), true);
 	assert.equal(existsSync(legacy.stashFile), false);
 	assert.equal((await loadStashStore(destination)).entryCount, 0);
-	assert.equal((await migrateLegacyStash(CWD, destinationBase, legacyBase)).kind, "not-needed");
+	assert.equal(await migrateLegacyStash(CWD, destinationBase, legacyBase), false);
 });
 
 test("migrateLegacyStash upgrades historical schema v1 state", async () => {
@@ -96,7 +96,7 @@ test("migrateLegacyStash upgrades historical schema v1 state", async () => {
 	writeLegacy(JSON.stringify({ ...legacyFile, schemaVersion: 1, pendingAssetCleanup: undefined }));
 	const destination = resolveStashPaths(CWD, destinationBase);
 
-	assert.equal((await migrateLegacyStash(CWD, destinationBase, legacyBase)).kind, "migrated");
+	assert.equal(await migrateLegacyStash(CWD, destinationBase, legacyBase), true);
 	assert.equal((await loadStashStore(destination)).entries[0]?.text, "schema one");
 	assert.equal(
 		JSON.parse(readFileSync(destination.stashFile, "utf8")).schemaVersion,
@@ -118,9 +118,9 @@ test("migrateLegacyStash commits populated state and only its owned assets", asy
 	writeFileSync(path.join(legacyBase, "other-scope.json"), "unrelated");
 	const destination = resolveStashPaths(CWD, destinationBase);
 
-	const result = await migrateLegacyStash(CWD, destinationBase, legacyBase);
+	const didMigrate = await migrateLegacyStash(CWD, destinationBase, legacyBase);
 
-	assert.equal(result.kind, "migrated");
+	assert.equal(didMigrate, true);
 	const migrated = await loadStashStore(destination);
 	assert.deepEqual(migrated.entries, [entry]);
 	assert.deepEqual(migrated.pendingAssetCleanupIds, [PENDING_ID]);
@@ -183,7 +183,7 @@ test("migrateLegacyStash resumes after assets copy but before state commit", asy
 	assert.deepEqual(readdirSync(destination.assetDir(ACTIVE_ID)), ["00-image.png"]);
 	assert.equal(existsSync(legacy.stashFile), true);
 
-	assert.equal((await migrateLegacyStash(CWD, destinationBase, legacyBase)).kind, "resumed");
+	assert.equal(await migrateLegacyStash(CWD, destinationBase, legacyBase), true);
 	assert.equal((await loadStashStore(destination)).entries[0]?.text, "interrupted");
 	assert.equal(existsSync(legacy.stashFile), false);
 	assert.equal(

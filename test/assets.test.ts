@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { isImagePath, persistTmpImages, removeAssetDir } from "../src/assets.ts";
+import { isImagePath, persistTmpImages } from "../src/assets.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const JPEG_BYTES = Buffer.from("ffd8ffe0", "hex");
@@ -368,33 +368,4 @@ test("persistTmpImages rejects a symbolic-link asset root", async () => {
 		/storage directory.*symbolic link/,
 	);
 	assert.deepEqual(readdirSync(target), []);
-});
-
-test("removeAssetDir deletes the directory", async () => {
-	const assetDir = path.join(scratch, "assets", "entry-5");
-	mkdirSync(assetDir, { recursive: true });
-	writeFileSync(path.join(assetDir, "00-x.png"), "x");
-	await removeAssetDir(assetDir);
-	assert.equal(existsSync(assetDir), false);
-});
-
-test("removeAssetDir rejects a symbolic link without touching its target", async () => {
-	const target = path.join(scratch, "remove-target");
-	const marker = path.join(target, "marker");
-	const linkedAssetDir = path.join(scratch, "linked-entry");
-	mkdirSync(target);
-	writeFileSync(marker, "keep");
-	symlinkSync(target, linkedAssetDir, "dir");
-
-	await assert.rejects(() => removeAssetDir(linkedAssetDir), /asset directory.*symbolic link/);
-	assert.equal(readFileSync(marker, "utf8"), "keep");
-	assert.equal(existsSync(linkedAssetDir), true);
-});
-
-test("removeAssetDir rejects an unexpected file type", async () => {
-	const assetDir = path.join(scratch, "not-a-directory");
-	writeFileSync(assetDir, "keep");
-
-	await assert.rejects(() => removeAssetDir(assetDir), /asset directory.*directory/);
-	assert.equal(readFileSync(assetDir, "utf8"), "keep");
 });

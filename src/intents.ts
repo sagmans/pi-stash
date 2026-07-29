@@ -6,14 +6,15 @@ import { readdir, rmdir, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 
-import { removeAssetDir } from "./assets.ts";
 import type { StashPaths } from "./paths.ts";
 import {
 	assertPrivateDirectory,
 	ensurePrivateDirectory,
+	hasErrorCode,
 	readPrivateTextFile,
+	removePrivateDirectory,
 	syncPrivateDirectory,
-	writePrivateTextFileExclusive,
+	writePrivateFileExclusive,
 } from "./private-fs.ts";
 import type { StashStore } from "./store.ts";
 import { createNewId, isRecord, isSafeEntryId, normalizeEntry, type StashEntry } from "./types.ts";
@@ -50,12 +51,6 @@ type MutationIntentData = AddIntentData | RestoreIntentData;
 export type MutationIntent = {
 	filePath: string;
 	data: MutationIntentData;
-};
-
-export type IntentReconciliation = {
-	removedStaging: number;
-	recoveredRestores: number;
-	skippedLive: number;
 };
 
 export async function beginAddIntent(
@@ -104,18 +99,14 @@ export async function completeIntent(intent: MutationIntent): Promise<void> {
 export async function reconcileMutationIntents(
 	paths: StashPaths,
 	store: StashStore,
-	remove: (assetDir: string) => Promise<void> = removeAssetDir,
-): Promise<IntentReconciliation> {
-	const result: IntentReconciliation = {
-		removedStaging: 0,
-		recoveredRestores: 0,
-		skippedLive: 0,
-	};
+	remove: (assetDir: string) => Promise<void> = removePrivateDirectory,
+): Promise<boolean> {
+	let didRecoverRestore = false;
 	const root = intentRoot(paths);
 	try {
 		await assertPrivateDirectory(root, "stash mutation intent directory");
 	} catch (error) {
-		if (hasErrorCode(error, "ENOENT")) return result;
+		if (hasErrorCode(error, "ENOENT")) return false;
 		throw error;
 	}
 	await store.refresh();
@@ -123,14 +114,10 @@ export async function reconcileMutationIntents(
 	for (const entry of entries) {
 		if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(MALFORMED_INTENT_MESSAGE);
 		const intent = await readIntent(path.join(root, entry.name));
-		if (ownerMayBeLive(intent.data.owner)) {
-			result.skippedLive += 1;
-			continue;
-		}
+		if (ownerMayBeLive(intent.data.owner)) continue;
 		if (intent.data.kind === "add") {
 			if (!store.entries.some((stashEntry) => stashEntry.id === intent.data.id)) {
 				await remove(paths.assetDir(intent.data.id));
-				result.removedStaging += 1;
 			}
 			await completeIntent(intent);
 			continue;
@@ -144,18 +131,18 @@ export async function reconcileMutationIntents(
 				message: restore.message,
 				assetCount: restore.assetCount,
 			});
-			result.recoveredRestores += 1;
+			didRecoverRestore = true;
 		}
 		await completeIntent(intent);
 	}
-	return result;
+	return didRecoverRestore;
 }
 
 async function writeIntent(paths: StashPaths, data: MutationIntentData): Promise<MutationIntent> {
 	const root = intentRoot(paths);
 	await ensurePrivateDirectory(root, "stash mutation intent directory");
 	const filePath = path.join(root, `${data.kind}-${data.id}${INTENT_FILE_SUFFIX}`);
-	await writePrivateTextFileExclusive(filePath, `${JSON.stringify(data, null, 2)}\n`);
+	await writePrivateFileExclusive(filePath, `${JSON.stringify(data, null, 2)}\n`);
 	await syncPrivateDirectory(root, "stash mutation intent directory");
 	return { filePath, data };
 }
@@ -225,13 +212,4 @@ function ownerMayBeLive(owner: MutationIntentOwner): boolean {
 
 function intentRoot(paths: StashPaths): string {
 	return `${paths.stashFile}${INTENT_ROOT_SUFFIX}`;
-}
-
-function hasErrorCode(value: unknown, code: string): boolean {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"code" in value &&
-		(value as { code: unknown }).code === code
-	);
 }

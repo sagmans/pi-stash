@@ -1,22 +1,8 @@
-// pi-stash — stash the current editor draft to disk so it can be resumed later.
-//
-// Drafts are persisted per worktree under <Pi agent dir>/pi-stash/<sanitized-cwd>.json.
-// Trigger surface:
-//   prefix+s        stash the current draft (clears the editor)
-//   prefix+shift+s  open the stash overlay (↑↓ move · Enter restore · →/space preview · d drop)
-//   /stash [msg]    stash with an optional label
-//   /stash-list     open the stash list overlay
-//   /stash-pop [i]  restore entry i (or the newest) into the editor and remove it
-//   /stash-drop [i] delete entry i (or the newest) and its persisted images
-//   /stash-clear    delete every stashed draft (confirms first)
-//
-// Stashed entries also render as a widget above the editor, mirroring how queued
-// steering/follow-up messages appear. Tmp-dir image paths are copied into the
-// stash so a restored draft never dangles; repo/absolute paths are left live.
+// Pi extension orchestration for worktree-scoped draft stashes.
 
 import path from "node:path";
 
-import { persistTmpImages, removeAssetDir } from "./assets.ts";
+import { persistTmpImages } from "./assets.ts";
 import type { ExtensionAPI, Theme } from "./host.ts";
 import {
 	beginAddIntent,
@@ -28,7 +14,8 @@ import {
 import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
 import { defaultStashBaseDir, resolveStashPaths, scopeLabel } from "./paths.ts";
-import { type Claim, startStashBinding } from "./prefix.ts";
+import { startStashBinding } from "./prefix.ts";
+import { removePrivateDirectory } from "./private-fs.ts";
 import {
 	CommittedMutationError,
 	loadStashStore,
@@ -42,8 +29,6 @@ import { themedWidgetLines } from "./widget.ts";
 
 const STASH_WIDGET_KEY = "pi-stash";
 const PREFIX_BINDING_NAMESPACE = "@sagmans/pi-stash";
-const STASH_CLAIM_KEY = "s";
-const LIST_CLAIM_KEY = "S";
 const widgetOpenHints = new WeakMap<StashUi, string>();
 const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before restoring";
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
@@ -90,12 +75,10 @@ export type StashOverlayTui = {
 
 export type StashSession = {
 	cwd: string;
-	mode: string;
-	hasUI: boolean;
 	ui: StashUi;
 };
 
-export function isSupportedSession(session: Pick<StashSession, "mode" | "hasUI">): boolean {
+export function isSupportedSession(session: { mode: string; hasUI: boolean }): boolean {
 	return session.mode === "tui" && session.hasUI;
 }
 
@@ -108,7 +91,7 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 		ui.setWidget(STASH_WIDGET_KEY, undefined);
 		return;
 	}
-	const entries = [...store.entries];
+	const entries = store.entries;
 	const openHint = widgetOpenHints.get(ui) ?? false;
 	ui.setWidget(STASH_WIDGET_KEY, (_tui, theme) => ({
 		render: (width) => themedWidgetLines(entries, theme, { openHint, width }),
@@ -162,7 +145,7 @@ export async function drainAssetCleanup(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
-	remove: AssetDirRemover = removeAssetDir,
+	remove: AssetDirRemover = removePrivateDirectory,
 	failureMessage = ASSET_CLEANUP_FAILED_MESSAGE,
 	signal?: AbortSignal,
 ): Promise<AssetCleanupReport> {
@@ -191,7 +174,7 @@ export async function doAssetCleanup(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
-	remove: AssetDirRemover = removeAssetDir,
+	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
 	await refreshVisibleStore(ui, store);
@@ -229,7 +212,7 @@ export async function doStash(
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
 	message?: string,
-	remove: AssetDirRemover = removeAssetDir,
+	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
 	if (signal?.aborted) return;
@@ -324,7 +307,7 @@ export async function openOverlay(
 ): Promise<void> {
 	await refreshVisibleStore(session.ui, store);
 	if (signal?.aborted) return;
-	const entries = [...store.entries];
+	const entries = store.entries;
 	if (entries.length === 0) {
 		safeNotify(session.ui, "No stashed drafts", "info");
 		return;
@@ -367,7 +350,7 @@ export async function openOverlay(
 				},
 				onRefresh: async () => {
 					await refreshVisibleStore(session.ui, store);
-					return [...store.entries];
+					return store.entries;
 				},
 				onRefreshError: (error) => {
 					if (!signal?.aborted) {
@@ -490,7 +473,7 @@ export async function doDrop(
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
 	selector?: string,
-	remove: AssetDirRemover = removeAssetDir,
+	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
 	if (signal?.aborted) return;
@@ -530,7 +513,7 @@ export async function doClear(
 	ui: StashUi,
 	store: StashStore,
 	paths: ReturnType<typeof resolveStashPaths>,
-	remove: AssetDirRemover = removeAssetDir,
+	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
 	await refreshVisibleStore(ui, store);
@@ -568,17 +551,15 @@ export async function doClear(
 }
 
 type ActiveSession = {
+	cwd: string;
 	ui: StashUi;
 	store: StashStore;
 	paths: ReturnType<typeof resolveStashPaths>;
 	stopBinding: () => void;
 	abort: AbortController;
-	accepting: boolean;
 	pending: Promise<void>;
 	unavailableReason?: string;
 };
-
-type SessionCtx = { cwd: string; mode: string; hasUI: boolean };
 type ActiveGetter = () => ActiveSession | undefined;
 type ActiveResolver = (ctx: { ui: unknown } | undefined) => ActiveSession | undefined;
 
@@ -601,7 +582,7 @@ function makeRequireActive(
 			}
 			return undefined;
 		}
-		if (!active?.accepting) {
+		if (!active || active.abort.signal.aborted) {
 			if (ctx && "ui" in ctx && ctx.ui && typeof (ctx.ui as StashUi).notify === "function") {
 				safeNotify(ctx.ui as StashUi, "pi-stash is not ready yet", "warning");
 			}
@@ -615,7 +596,7 @@ function enqueueOperation(
 	active: ActiveSession,
 	operation: (signal: AbortSignal) => Promise<void>,
 ): Promise<void> {
-	if (!active.accepting) return Promise.resolve();
+	if (active.abort.signal.aborted) return Promise.resolve();
 	if (active.unavailableReason) {
 		safeNotify(active.ui, active.unavailableReason, "error");
 		return Promise.resolve();
@@ -654,12 +635,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 			const session = resolve(ctx);
 			if (!session) return;
 			await enqueueOperation(session, (signal) =>
-				openOverlay(
-					{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: session.ui },
-					session.store,
-					session.paths,
-					signal,
-				),
+				openOverlay({ cwd: session.cwd, ui: session.ui }, session.store, session.paths, signal),
 			);
 		},
 	});
@@ -705,66 +681,22 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 	});
 }
 
-/** prefix-keybindings claims: `s` stashes, `shift+s` opens the overlay. */
-function buildStashClaims(ctx: SessionCtx, getter: ActiveGetter, requester: string): Claim[] {
-	return [
-		{
-			key: STASH_CLAIM_KEY,
-			eventId: `${requester}:stash`,
-			onFire: () => fireStash(getter),
-		},
-		{
-			key: LIST_CLAIM_KEY,
-			eventId: `${requester}:list`,
-			onFire: () => fireList(getter, ctx),
-		},
-	];
-}
-
 function bindingOpenHint(prefixKey: string): string {
 	return `${prefixKey} then shift+s to open`;
 }
 
-function reportActionFailure(
-	active: ActiveSession,
+function runPrefixAction(
+	getter: ActiveGetter,
 	action: string,
-	operation: Promise<void>,
+	operation: (active: ActiveSession, signal: AbortSignal) => Promise<void>,
 ): void {
-	void operation.catch((error) => {
-		if (active.accepting) {
+	const active = getter();
+	if (!active || active.abort.signal.aborted) return;
+	void enqueueOperation(active, (signal) => operation(active, signal)).catch((error) => {
+		if (!active.abort.signal.aborted) {
 			safeNotify(active.ui, `pi-stash: ${action} failed: ${describeError(error)}`, "error");
 		}
 	});
-}
-
-function fireStash(getter: ActiveGetter): void {
-	const active = getter();
-	if (active?.accepting) {
-		reportActionFailure(
-			active,
-			"stash",
-			enqueueOperation(active, (signal) =>
-				doStash(active.ui, active.store, active.paths, undefined, undefined, signal),
-			),
-		);
-	}
-}
-
-function fireList(getter: ActiveGetter, ctx: SessionCtx): void {
-	const active = getter();
-	if (!active?.accepting) return;
-	reportActionFailure(
-		active,
-		"open stash list",
-		enqueueOperation(active, (signal) =>
-			openOverlay(
-				{ cwd: ctx.cwd, mode: ctx.mode, hasUI: ctx.hasUI, ui: active.ui },
-				active.store,
-				active.paths,
-				signal,
-			),
-		),
-	);
 }
 
 export type PiStashInstallOptions = {
@@ -777,7 +709,6 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	let startupUnavailableReason: string | undefined;
 
 	const closeActiveSession = async (closing: ActiveSession): Promise<void> => {
-		closing.accepting = false;
 		closing.abort.abort();
 		closing.stopBinding();
 		await closing.pending;
@@ -805,12 +736,12 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			// Detect newer data before legacy migration so no recovery path can
 			// mutate or obscure a stash this extension cannot interpret.
 			store = await loadStashStore(paths);
-			const migration = await migrateLegacyStash(
+			const didMigrate = await migrateLegacyStash(
 				ctx.cwd,
 				baseDir,
 				options.legacyBaseDir ?? legacyStashBaseDir(),
 			);
-			if (migration.kind !== "not-needed") {
+			if (didMigrate) {
 				safeNotify(
 					ctx.ui as StashUi,
 					"Migrated legacy pi-stash data to the configured Pi agent directory",
@@ -818,8 +749,8 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				);
 				store = await loadStashStore(paths);
 			}
-			const reconciliation = await reconcileMutationIntents(paths, store);
-			if (reconciliation.recoveredRestores > 0) {
+			const didRecoverRestore = await reconcileMutationIntents(paths, store);
+			if (didRecoverRestore) {
 				safeNotify(ctx.ui as StashUi, RESTORE_RECOVERED_MESSAGE, "warning");
 			}
 		} catch (error) {
@@ -843,7 +774,20 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		const stopBinding = startStashBinding({
 			events: pi.events,
 			requester: bindingRequester,
-			claims: buildStashClaims(ctx, () => active, bindingRequester),
+			onStash: () =>
+				runPrefixAction(
+					() => active,
+					"stash",
+					(session, signal) =>
+						doStash(session.ui, session.store, session.paths, undefined, undefined, signal),
+				),
+			onList: () =>
+				runPrefixAction(
+					() => active,
+					"open stash list",
+					(session, signal) =>
+						openOverlay({ cwd: session.cwd, ui: session.ui }, session.store, session.paths, signal),
+				),
 			onActive: (prefixKey) => {
 				if (abort.signal.aborted) return;
 				widgetOpenHints.set(ui, bindingOpenHint(prefixKey));
@@ -862,12 +806,12 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		});
 
 		active = {
+			cwd: ctx.cwd,
 			ui,
 			store,
 			paths,
 			stopBinding,
 			abort,
-			accepting: true,
 			pending: Promise.resolve(),
 		};
 	});

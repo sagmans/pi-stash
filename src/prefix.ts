@@ -1,30 +1,12 @@
-// Event-bus protocol that claims two prefix-key slots from prefix-keybindings:
-//   prefix+s       -> stash the current editor draft
-//   prefix+shift+s -> open the stash list overlay
-//
-// This module owns no SDK or terminal state: the event bus, the scheduler, and
-// the action callbacks are all injected so the protocol is fully unit-testable
-// without a real TUI. src/index.ts supplies the real SDK glue.
-//
-// Lifecycle:
-//   session_start  -> emit `prefix-keybindings:query`
-//                  -> on `prefix-keybindings:available` emit
-//                     `prefix-keybindings:register { requester, key, eventId }`
-//                     for each claimed key
-//                  -> on the key's owned action event, invoke its callback
-//   no `available` -> after the window, invoke `onInert` once and stay dormant
-//   session_shutdown / cleanup -> detach every listener and cancel the timer
-//
-// A claim is rejected silently by prefix-keybindings when the key is already
-// taken. Per-instance requester and event IDs keep the winning registration
-// isolated, while slash commands remain the reliable fallback.
+// Fixed prefix-keybindings protocol for stash and list actions.
+// Per-instance event IDs isolate duplicate loads; requester/key validation keeps
+// dispatch bound to the registry winner while slash commands remain fallback.
 
 const PREFIX_KEYBINDINGS_QUERY_EVENT = "prefix-keybindings:query";
 const PREFIX_KEYBINDINGS_AVAILABLE_EVENT = "prefix-keybindings:available";
 const PREFIX_KEYBINDINGS_REGISTER_EVENT = "prefix-keybindings:register";
-
-// The bus round-trip is normally synchronous, so this only fires when the
-// prefix-keybindings extension is missing entirely.
+const STASH_KEY = "s";
+const LIST_KEY = "S";
 const DEFAULT_AVAILABILITY_TIMEOUT_MS = 2000;
 
 export type EventBus = {
@@ -34,19 +16,14 @@ export type EventBus = {
 
 export type Scheduler = (fn: () => void, ms: number) => () => void;
 
-export type Claim = {
-	key: string;
-	eventId: string;
-	onFire: () => void;
-};
-
 export type StashBindingOptions = {
 	events: EventBus;
 	/** Unique package-instance identity used to isolate duplicate loads. */
 	requester: string;
-	claims: Claim[];
+	onStash(): void;
+	onList(): void;
 	/** Invoked once if prefix-keybindings never answers. */
-	onInert: () => void;
+	onInert(): void;
 	/** Reports the provider's effective prefix for truthful UI hints. */
 	onActive?: (prefixKey: string) => void;
 	schedule?: Scheduler;
@@ -74,51 +51,51 @@ function isOwnedAction(raw: unknown, requester: string, key: string): boolean {
 
 export function startStashBinding(opts: StashBindingOptions): () => void {
 	const schedule = opts.schedule ?? defaultScheduler;
-	const timeoutMs = opts.availabilityTimeoutMs ?? DEFAULT_AVAILABILITY_TIMEOUT_MS;
-
-	// First-wins settlement keeps competing availability announcements from
-	// changing a session's effective binding after claims were registered.
-	let outcome: "claimed" | "inert" | null = null;
-	let cleaned = false;
+	const actions = [
+		{ key: STASH_KEY, eventId: `${opts.requester}:stash`, fire: opts.onStash },
+		{ key: LIST_KEY, eventId: `${opts.requester}:list`, fire: opts.onList },
+	];
+	let state: "waiting" | "claimed" | "inert" | "cleaned" = "waiting";
 	const cleanups: Array<() => void> = [];
 
 	const cancelAvailabilityTimer = schedule(() => {
-		if (cleaned || outcome) return;
-		outcome = "inert";
+		if (state !== "waiting") return;
+		state = "inert";
 		opts.onInert();
-	}, timeoutMs);
+	}, opts.availabilityTimeoutMs ?? DEFAULT_AVAILABILITY_TIMEOUT_MS);
 
-	const offAvailable = opts.events.on(PREFIX_KEYBINDINGS_AVAILABLE_EVENT, (raw) => {
-		if (cleaned || outcome) return;
-		const prefixKey = availablePrefix(raw);
-		if (!prefixKey) return;
-		outcome = "claimed";
-		cancelAvailabilityTimer();
-		for (const claim of opts.claims) {
-			opts.events.emit(PREFIX_KEYBINDINGS_REGISTER_EVENT, {
-				requester: opts.requester,
-				key: claim.key,
-				eventId: claim.eventId,
-			});
-		}
-		opts.onActive?.(prefixKey);
-	});
-
-	for (const claim of opts.claims) {
-		const off = opts.events.on(claim.eventId, (raw) => {
-			if (!cleaned && outcome === "claimed" && isOwnedAction(raw, opts.requester, claim.key)) {
-				claim.onFire();
+	cleanups.push(
+		opts.events.on(PREFIX_KEYBINDINGS_AVAILABLE_EVENT, (raw) => {
+			if (state !== "waiting") return;
+			const prefixKey = availablePrefix(raw);
+			if (!prefixKey) return;
+			state = "claimed";
+			cancelAvailabilityTimer();
+			for (const action of actions) {
+				opts.events.emit(PREFIX_KEYBINDINGS_REGISTER_EVENT, {
+					requester: opts.requester,
+					key: action.key,
+					eventId: action.eventId,
+				});
 			}
-		});
-		cleanups.push(off);
+			opts.onActive?.(prefixKey);
+		}),
+	);
+
+	for (const action of actions) {
+		cleanups.push(
+			opts.events.on(action.eventId, (raw) => {
+				if (state === "claimed" && isOwnedAction(raw, opts.requester, action.key)) action.fire();
+			}),
+		);
 	}
 
-	cleanups.push(offAvailable, cancelAvailabilityTimer);
+	cleanups.push(cancelAvailabilityTimer);
 	opts.events.emit(PREFIX_KEYBINDINGS_QUERY_EVENT, { requester: opts.requester });
 
 	return () => {
-		if (cleaned) return;
-		cleaned = true;
+		if (state === "cleaned") return;
+		state = "cleaned";
 		while (cleanups.length) cleanups.shift()?.();
 	};
 }

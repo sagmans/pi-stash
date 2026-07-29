@@ -4,17 +4,18 @@
 // replacement cannot change the bytes committed to a stash.
 
 import { createHash } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, realpath, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { type FileHandle, lstat, open, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
 	assertPrivateDirectory,
+	assertRegularOwnedFile,
 	ensurePrivateDirectory,
-	PRIVATE_FILE_MODE,
 	removePrivateDirectory,
 	syncPrivateDirectory,
+	writePrivateFileExclusive,
 } from "./private-fs.ts";
 import { isSafeEntryId } from "./types.ts";
 
@@ -144,7 +145,7 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 		await ensurePrivateDirectory(path.dirname(input.assetDir));
 		await ensurePrivateDirectory(input.assetDir);
 		for (const copy of copiesByDigest.values()) {
-			await writePrivateImage(copy.destination, copy.bytes);
+			await writePrivateFileExclusive(copy.destination, copy.bytes);
 		}
 		await syncPrivateDirectory(input.assetDir, "asset directory");
 		await syncPrivateDirectory(path.dirname(input.assetDir));
@@ -232,14 +233,14 @@ async function loadImage(
 	onSourceOpened: PersistInput["onSourceOpened"],
 ): Promise<LoadedImage> {
 	const before = await lstat(reference.source);
-	assertSafeSource(before, "image source");
+	assertRegularOwnedFile(before, "image source");
 	await assertCanonicalBoundary(reference, tmpRoot, ownedAssetsRoot);
 	if (before.size > maxBytes) throw new Error(IMAGE_LIMIT_MESSAGE);
 
 	const handle = await open(reference.source, constants.O_RDONLY | NO_FOLLOW_FLAG);
 	try {
 		const opened = await handle.stat();
-		assertSafeSource(opened, "image source");
+		assertRegularOwnedFile(opened, "image source");
 		if (opened.dev !== before.dev || opened.ino !== before.ino) {
 			throw new Error("image source changed during validation");
 		}
@@ -275,15 +276,6 @@ async function assertCanonicalBoundary(
 	const relativeAssetDir = path.relative(canonicalRoot, canonicalAssetDir);
 	if (!isDirectChild(relativeAssetDir) || path.dirname(canonicalSource) !== canonicalAssetDir) {
 		throw new Error("owned image source is outside its asset boundary");
-	}
-}
-
-function assertSafeSource(stats: Stats, label: string): void {
-	if (stats.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
-	if (!stats.isFile()) throw new Error(`${label} must be a regular file`);
-	const currentUid = process.getuid?.();
-	if (currentUid !== undefined && stats.uid !== currentUid) {
-		throw new Error(`${label} must be owned by the current user`);
 	}
 }
 
@@ -354,23 +346,4 @@ function isDirectChild(relative: string): boolean {
 function stageCopy(source: string, assetDir: string, index: number): string {
 	const base = path.basename(source);
 	return path.join(assetDir, `${index.toString().padStart(2, "0")}-${base}`);
-}
-
-async function writePrivateImage(destination: string, bytes: Buffer): Promise<void> {
-	const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW_FLAG;
-	const handle = await open(destination, flags, PRIVATE_FILE_MODE);
-	let succeeded = false;
-	try {
-		await handle.writeFile(bytes);
-		await handle.chmod(PRIVATE_FILE_MODE);
-		await handle.sync();
-		succeeded = true;
-	} finally {
-		await handle.close();
-		if (!succeeded) await rm(destination, { force: true });
-	}
-}
-
-export async function removeAssetDir(assetDir: string): Promise<void> {
-	await removePrivateDirectory(assetDir);
 }

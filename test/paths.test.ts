@@ -3,11 +3,10 @@ import test from "node:test";
 
 import { defaultStashBaseDir, resolveStashPaths, sanitizeCwd, scopeLabel } from "../src/paths.ts";
 
-test("sanitizeCwd flattens absolute posix path with double dash", () => {
-	assert.equal(sanitizeCwd("/Users/me/repo"), "v2--Users--me--repo");
-});
+const MAX_STORAGE_KEY_BYTES = 200;
 
-test("sanitizeCwd drops trailing separators", () => {
+test("sanitizeCwd flattens absolute POSIX paths", () => {
+	assert.equal(sanitizeCwd("/Users/me/repo"), "v2--Users--me--repo");
 	assert.equal(sanitizeCwd("/Users/me/repo/"), "v2--Users--me--repo");
 });
 
@@ -22,35 +21,20 @@ test("sanitizeCwd produces distinct keys for distinct cwds", () => {
 	assert.notEqual(sanitizeCwd("/a%2D%2Db"), sanitizeCwd("/a--b"));
 });
 
-test("sanitizeCwd stays within maxLength by hashing the overflow", () => {
-	const cwd = `/${"segment-".repeat(40)}`;
-	const sanitized = sanitizeCwd(cwd, { maxLength: 60 });
-	assert.ok(
-		Buffer.byteLength(sanitized) <= 60,
-		`expected <= 60 bytes, got ${Buffer.byteLength(sanitized)}`,
-	);
-	assert.ok(sanitized.startsWith("v2--"));
-	// Two distinct long paths must not collide even when truncated.
-	assert.notEqual(sanitized, sanitizeCwd(`${cwd}-x`, { maxLength: 60 }));
-});
-
-test("sanitizeCwd limits multibyte names by UTF-8 bytes", () => {
-	const sanitized = sanitizeCwd(`/a/${"界".repeat(40)}`, { maxLength: 60 });
-	assert.ok(
-		Buffer.byteLength(sanitized) <= 60,
-		`expected <= 60 bytes, got ${Buffer.byteLength(sanitized)}`,
-	);
-});
-
-test("sanitizeCwd rejects a limit too short for a collision-resistant key", () => {
-	assert.throws(() => sanitizeCwd("/repo", { maxLength: 21 }), /at least 22 bytes/);
+test("sanitizeCwd limits long and multibyte keys to 200 UTF-8 bytes", () => {
+	for (const cwd of [`/${"segment-".repeat(40)}`, `/a/${"界".repeat(100)}`]) {
+		const sanitized = sanitizeCwd(cwd);
+		assert.ok(Buffer.byteLength(sanitized) <= MAX_STORAGE_KEY_BYTES);
+		assert.ok(sanitized.startsWith("v2--"));
+		assert.notEqual(sanitized, sanitizeCwd(`${cwd}-x`));
+	}
 });
 
 test("defaultStashBaseDir lives under Pi's configured agent directory", () => {
 	assert.equal(defaultStashBaseDir("/profiles/work"), "/profiles/work/pi-stash");
 });
 
-test("scopeLabel preserves root, home, nested, sibling, and missing-home boundaries", () => {
+test("scopeLabel preserves POSIX root, home, nested, sibling, and missing-home boundaries", () => {
 	assert.equal(scopeLabel("/", "/Users/me"), "/");
 	assert.equal(scopeLabel("/Users/me", "/Users/me"), "~");
 	assert.equal(scopeLabel("/Users/me/repo", "/Users/me"), "~/repo");
@@ -58,13 +42,6 @@ test("scopeLabel preserves root, home, nested, sibling, and missing-home boundar
 	assert.equal(scopeLabel("/Users/me-too/repo", "/Users/me"), "/Users/me-too/repo");
 	assert.equal(scopeLabel("/srv/repo", "/Users/me"), "/srv/repo");
 	assert.equal(scopeLabel("/srv/repo", undefined), "/srv/repo");
-});
-
-test("scopeLabel handles Windows path boundaries without host-platform parsing", () => {
-	assert.equal(scopeLabel("C:\\", "C:\\Users\\me"), "C:\\");
-	assert.equal(scopeLabel("C:\\Users\\me", "C:\\Users\\me"), "~");
-	assert.equal(scopeLabel("C:\\Users\\me\\repo", "C:\\Users\\me"), "~\\repo");
-	assert.equal(scopeLabel("C:\\Users\\me-too\\repo", "C:\\Users\\me"), "C:\\Users\\me-too\\repo");
 });
 
 test("resolveStashPaths derives stash file and per-entry asset dir", () => {

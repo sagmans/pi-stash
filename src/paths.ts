@@ -28,24 +28,17 @@ const BACKSLASH = "\\";
 const ESCAPED_BACKSLASH = "%5C";
 const HASH_ALGORITHM = "sha256";
 const HASH_LENGTH = 16;
-const MIN_SANITIZE_LENGTH =
-	Buffer.byteLength(KEY_PREFIX) + HASH_LENGTH + Buffer.byteLength(SEPARATOR);
-
-export function sanitizeCwd(cwd: string, options: { maxLength?: number } = {}): string {
-	const maxLength = options.maxLength ?? SANITIZE_MAX_LENGTH;
-	if (maxLength < MIN_SANITIZE_LENGTH) {
-		throw new RangeError(`maxLength must be at least ${MIN_SANITIZE_LENGTH} bytes`);
-	}
+export function sanitizeCwd(cwd: string): string {
 	const segments = cwd.split("/").filter(Boolean).map(escapeSegment);
 	const sanitized = `${KEY_PREFIX}${segments.join(SEPARATOR)}`;
-	if (Buffer.byteLength(sanitized) <= maxLength) return sanitized;
+	if (Buffer.byteLength(sanitized) <= SANITIZE_MAX_LENGTH) return sanitized;
 
 	// An unusually deep cwd can overflow a filename. Keep a readable prefix and
 	// append a stable hash of the full cwd so two distinct long paths never
 	// collide while remaining identifiable.
 	const digest = createHash(HASH_ALGORITHM).update(cwd, "utf8").digest("hex").slice(0, HASH_LENGTH);
 	const suffix = `${SEPARATOR}${digest}`;
-	const prefix = truncateToUtf8Bytes(sanitized, maxLength - Buffer.byteLength(suffix));
+	const prefix = truncateToUtf8Bytes(sanitized, SANITIZE_MAX_LENGTH - Buffer.byteLength(suffix));
 	return `${prefix}${suffix}`;
 }
 
@@ -69,23 +62,22 @@ function truncateToUtf8Bytes(value: string, maxBytes: number): string {
 }
 
 export function scopeLabel(cwd: string, homeDirectory?: string): string {
-	const pathApi = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(cwd) ? path.win32 : path.posix;
-	const normalizedCwd = pathApi.normalize(cwd);
+	const normalizedCwd = path.posix.normalize(cwd);
 	let display = normalizedCwd;
-	if (homeDirectory && pathApi.isAbsolute(homeDirectory)) {
-		const normalizedHome = pathApi.normalize(homeDirectory);
-		const relative = pathApi.relative(normalizedHome, normalizedCwd);
+	if (homeDirectory && path.posix.isAbsolute(homeDirectory)) {
+		const normalizedHome = path.posix.normalize(homeDirectory);
+		const relative = path.posix.relative(normalizedHome, normalizedCwd);
 		const isWithinHome =
 			relative === "" ||
 			(relative !== ".." &&
-				!relative.startsWith(`..${pathApi.sep}`) &&
-				!pathApi.isAbsolute(relative));
-		if (isWithinHome) display = relative ? `~${pathApi.sep}${relative}` : "~";
+				!relative.startsWith(`..${path.posix.sep}`) &&
+				!path.posix.isAbsolute(relative));
+		if (isWithinHome) display = relative ? `~${path.posix.sep}${relative}` : "~";
 	}
 
-	const segments = display.split(pathApi.sep).filter(Boolean);
+	const segments = display.split(path.posix.sep).filter(Boolean);
 	if (segments.length <= 4) return display;
-	return `…${pathApi.sep}${segments.slice(-3).join(pathApi.sep)}`;
+	return `…${path.posix.sep}${segments.slice(-3).join(path.posix.sep)}`;
 }
 
 export function defaultStashBaseDir(agentDir: string = resolveAgentDir()): string {

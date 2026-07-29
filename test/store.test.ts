@@ -28,7 +28,6 @@ import {
 	writeStashFile,
 } from "../src/store.ts";
 
-const CURRENT_SCHEMA_VERSION = 2;
 const DEAD_PROCESS_ID = 2_147_483_647;
 const FRACTIONAL_ASSET_COUNT = 0.5;
 const FUTURE_SCHEMA_VERSION = STASH_SCHEMA_VERSION + 1;
@@ -536,8 +535,7 @@ test("migrates populated schema v1 state without losing owned assets", async () 
 	const store = await loadStashStore(paths, clock);
 	const migrated = JSON.parse(readFileSync(paths.stashFile, "utf8"));
 
-	assert.equal(STASH_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION);
-	assert.equal(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
+	assert.equal(migrated.schemaVersion, STASH_SCHEMA_VERSION);
 	assert.equal(store.entries[0]?.id, LEGACY_ENTRY_ID);
 	assert.equal(store.entries[0]?.message, "legacy note");
 	assert.equal(store.entries[0]?.assetCount, 1);
@@ -554,7 +552,7 @@ test("migrates empty schema v1 state with missing cleanup metadata", async () =>
 
 	assert.equal(store.entryCount, 0);
 	assert.deepEqual(store.pendingAssetCleanupIds, []);
-	assert.equal(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
+	assert.equal(migrated.schemaVersion, STASH_SCHEMA_VERSION);
 	assert.deepEqual(migrated.pendingAssetCleanup, []);
 });
 
@@ -580,7 +578,7 @@ test("retries schema v1 migration after an interrupted write", async () => {
 	assert.equal(recovered.entries[0]?.text, "preserved");
 	assert.equal(
 		JSON.parse(readFileSync(paths.stashFile, "utf8")).schemaVersion,
-		CURRENT_SCHEMA_VERSION,
+		STASH_SCHEMA_VERSION,
 	);
 });
 
@@ -846,21 +844,12 @@ await withStashFileLock(${JSON.stringify(paths.stashFile)}, async () => {
 	assert.equal(store.entries[0]?.text, "recovered after crash");
 });
 
-test("reclaims a stale lock owned by a dead local process", async () => {
-	const paths = resolveStashPaths("/dead-lock", baseDir);
+test("reclaims stale malformed lock metadata after refusing it while fresh", async () => {
+	const paths = resolveStashPaths("/stale-malformed-lock", baseDir);
 	const store = await loadStashStore(paths, clock);
 	const lockPath = `${paths.stashFile}.lock`;
 	mkdirSync(lockPath);
-	writeFileSync(
-		path.join(lockPath, "owner.json"),
-		JSON.stringify({
-			pid: DEAD_PROCESS_ID,
-			host: hostname(),
-			token: TEST_LOCK_TOKEN,
-			generation: "dead-generation",
-			createdAt: new Date().toISOString(),
-		}),
-	);
+	writeFileSync(path.join(lockPath, "owner.json"), "not-json");
 	const staleTime = new Date(Date.now() - STALE_LOCK_AGE_MS);
 	utimesSync(lockPath, staleTime, staleTime);
 

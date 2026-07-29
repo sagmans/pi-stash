@@ -4,24 +4,31 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import type { StashEntry } from "../src/types.ts";
 import {
 	firstNonEmptyLine,
-	MAX_WIDGET_ENTRIES,
-	renderWidgetLines,
 	themedWidgetLines,
 	truncateForWidget,
+	type WidgetTheme,
 } from "../src/widget.ts";
+
+const theme: WidgetTheme = { fg: (_color, text) => text };
 
 function entry(partial: Partial<StashEntry> = {}): StashEntry {
 	return { id: partial.id ?? "id", text: partial.text ?? "draft", createdAt: 1, ...partial };
 }
 
+function render(
+	entries: readonly StashEntry[],
+	options: Parameters<typeof themedWidgetLines>[2] = {},
+): string[] {
+	return themedWidgetLines(entries, theme, options);
+}
+
 test("empty entries render no lines", () => {
-	assert.deepEqual(renderWidgetLines([]), []);
+	assert.deepEqual(render([]), []);
 });
 
 test("renders header and one line per entry with LIFO index", () => {
-	const lines = renderWidgetLines([entry({ text: "newest" }), entry({ text: "oldest" })], {
+	const lines = render([entry({ text: "newest" }), entry({ text: "oldest" })], {
 		openHint: "X",
-		previewWidth: 40,
 	});
 	assert.ok(lines[0]?.includes("Stash"));
 	assert.ok(lines[1]?.includes("[0]"));
@@ -31,7 +38,7 @@ test("renders header and one line per entry with LIFO index", () => {
 });
 
 test("omits the shortcut hint when no binding is available", () => {
-	const [header] = renderWidgetLines([entry()], { openHint: false });
+	const [header] = render([entry()], { openHint: false });
 
 	assert.equal(header?.includes("to open"), false);
 	assert.equal(header?.includes("(false)"), false);
@@ -39,35 +46,24 @@ test("omits the shortcut hint when no binding is available", () => {
 });
 
 test("prefers message over first-line preview", () => {
-	const lines = renderWidgetLines(
-		[entry({ text: "body line one\nbody line two", message: "my label" })],
-		{ previewWidth: 40 },
-	);
+	const lines = render([entry({ text: "body line one\nbody line two", message: "my label" })]);
 	assert.ok(lines[1]?.includes("my label"));
 	assert.ok(!lines[1]?.includes("body line one"));
 });
 
-test("marks entries with persisted images", () => {
-	const lines = renderWidgetLines([entry({ text: "x", assetCount: 2 })], {
-		previewWidth: 40,
-	});
-	assert.ok(lines[1]?.includes("[img]"));
+test("marks only entries with persisted images", () => {
+	assert.ok(render([entry({ assetCount: 2 })])[1]?.includes("[img]"));
+	assert.ok(!render([entry()])[1]?.includes("[img]"));
 });
 
-test("does not mark entries without images", () => {
-	const lines = renderWidgetLines([entry({ text: "x" })], { previewWidth: 40 });
-	assert.ok(!lines[1]?.includes("[img]"));
-});
-
-test("caps visible entries and reports overflow without conflating rendered rows", () => {
+test("shows five entries and reports fixed-policy overflow", () => {
 	const entries = Array.from({ length: 10 }, (_, index) =>
 		entry({ id: `id-${index}`, text: `e${index}` }),
 	);
-	const lines = renderWidgetLines(entries, { maxEntries: 3, previewWidth: 40 });
-	// Header + three entry rows + one overflow row.
-	assert.equal(lines.length, 5);
-	assert.ok(lines[lines.length - 1]?.includes("+7 more"));
-	assert.equal(MAX_WIDGET_ENTRIES, 5);
+	const lines = render(entries);
+
+	assert.equal(lines.length, 7);
+	assert.ok(lines.at(-1)?.includes("+5 more"));
 });
 
 test("every widget row fits terminal columns at narrow and Unicode boundaries", () => {
@@ -76,24 +72,13 @@ test("every widget row fits terminal columns at narrow and Unicode boundaries", 
 		entry({ text: "second" }),
 	];
 	for (const width of [0, 1, 2, 5, 12, 20, 40]) {
-		const lines = renderWidgetLines(entries, {
-			openHint: "ctrl+x then shift+s to open",
-			previewWidth: 80,
-			width,
-		});
+		const lines = render(entries, { openHint: "ctrl+x then shift+s to open", width });
 		assert.equal(
 			lines.some((line) => visibleWidth(line) > width),
 			false,
 			`row exceeded ${width} columns`,
 		);
 	}
-});
-
-test("widget entry limits include zero and exact overflow boundaries", () => {
-	const entries = [entry({ id: "one" }), entry({ id: "two" })];
-	assert.equal(renderWidgetLines(entries, { maxEntries: 0 }).length, 2);
-	assert.equal(renderWidgetLines(entries, { maxEntries: 1 }).length, 3);
-	assert.equal(renderWidgetLines(entries, { maxEntries: 2 }).length, 3);
 });
 
 test("firstNonEmptyLine skips blank leading lines", () => {
@@ -109,9 +94,7 @@ test("truncateForWidget measures terminal columns instead of code units", () => 
 });
 
 test("widget labels cannot emit terminal controls or extra rows", () => {
-	const lines = renderWidgetLines([
-		entry({ message: "safe\u001b[31m red\u001b[0m\nforged\u202erow" }),
-	]);
+	const lines = render([entry({ message: "safe\u001b[31m red\u001b[0m\nforged\u202erow" })]);
 
 	assert.equal(lines.length, 2);
 	assert.equal(
@@ -123,7 +106,7 @@ test("widget labels cannot emit terminal controls or extra rows", () => {
 
 test("themedWidgetLines routes each region through theme.fg", () => {
 	const colors: string[] = [];
-	const theme = {
+	const coloredTheme = {
 		fg: (color: string, text: string) => {
 			colors.push(color);
 			return text;
@@ -131,7 +114,7 @@ test("themedWidgetLines routes each region through theme.fg", () => {
 	};
 	const lines = themedWidgetLines(
 		[entry({ text: "alpha", assetCount: 1 }), entry({ text: "beta" })],
-		theme,
+		coloredTheme,
 	);
 	assert.ok(lines.length >= 3);
 	assert.ok(colors.includes("accent"), "header accented");

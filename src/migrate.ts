@@ -3,7 +3,7 @@
 // source data is removed only after normalized state and every owned asset are
 // verified at the destination.
 
-import { constants, type Stats } from "node:fs";
+import { constants } from "node:fs";
 import { link, lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -11,14 +11,17 @@ import path from "node:path";
 import { resolveStashPaths, type StashPaths } from "./paths.ts";
 import {
 	assertPrivateDirectory,
+	assertRegularOwnedFile,
 	ensurePrivateDirectory,
+	hasErrorCode,
 	PRIVATE_FILE_MODE,
 	type PrivateTextFile,
+	pathExists,
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
 	syncPrivateDirectory,
-	writePrivateTextFileExclusive,
+	writePrivateFileExclusive,
 } from "./private-fs.ts";
 import { withStashFileLock } from "./store.ts";
 import { isRecord, isSafeEntryId, parseStashFile, type StashFile } from "./types.ts";
@@ -44,10 +47,6 @@ type MigrationMarker = {
 	requiredAssetIds: string[];
 };
 
-export type MigrationResult = {
-	kind: "not-needed" | "migrated" | "resumed";
-};
-
 type MigrationOptions = {
 	failAfter?: "marker" | "assets" | "destination";
 };
@@ -61,16 +60,12 @@ export async function migrateLegacyStash(
 	destinationBaseDir: string,
 	legacyBaseDir: string = legacyStashBaseDir(),
 	options: MigrationOptions = {},
-): Promise<MigrationResult> {
+): Promise<boolean> {
 	const source = resolveStashPaths(cwd, legacyBaseDir);
 	const destination = resolveStashPaths(cwd, destinationBaseDir);
-	if (path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir)) {
-		return { kind: "not-needed" };
-	}
+	if (path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir)) return false;
 	const markerPath = `${destination.stashFile}${MIGRATION_SUFFIX}`;
-	if (!(await pathExists(source.stashFile)) && !(await pathExists(markerPath))) {
-		return { kind: "not-needed" };
-	}
+	if (!(await pathExists(source.stashFile)) && !(await pathExists(markerPath))) return false;
 	return withStashFileLock(source.stashFile, () =>
 		withStashFileLock(destination.stashFile, () => migrateLocked(source, destination, options)),
 	);
@@ -80,7 +75,7 @@ async function migrateLocked(
 	source: StashPaths,
 	destination: StashPaths,
 	options: MigrationOptions,
-): Promise<MigrationResult> {
+): Promise<boolean> {
 	const markerPath = `${destination.stashFile}${MIGRATION_SUFFIX}`;
 	const markerExists = await pathExists(markerPath);
 	let marker: MigrationMarker;
@@ -92,7 +87,7 @@ async function migrateLocked(
 		if (sourceFile) assertMarkerMatchesFile(marker, sourceFile);
 	} else {
 		sourceFile = await readLegacyFileIfPresent(source);
-		if (!sourceFile) return { kind: "not-needed" };
+		if (!sourceFile) return false;
 		if ((await pathExists(destination.stashFile)) || (await pathExists(destination.assetsRoot))) {
 			throw new Error(DESTINATION_CONFLICT_MESSAGE);
 		}
@@ -119,7 +114,7 @@ async function migrateLocked(
 	await removeMigratedSource(source, marker);
 	await unlink(markerPath);
 	await syncPrivateDirectory(path.dirname(markerPath));
-	return { kind: markerExists ? "resumed" : "migrated" };
+	return true;
 }
 
 function markerFor(source: StashPaths, destination: StashPaths, file: StashFile): MigrationMarker {
@@ -309,7 +304,7 @@ async function writePrivateBytes(filePath: string, bytes: Buffer): Promise<void>
 
 async function installPrivateTextFile(filePath: string, text: string): Promise<void> {
 	const tempPath = `${filePath}.${process.pid}.${MIGRATION_TEMP_SUFFIX}`;
-	await writePrivateTextFileExclusive(tempPath, text);
+	await writePrivateFileExclusive(tempPath, text);
 	try {
 		await link(tempPath, filePath);
 		await syncPrivateDirectory(path.dirname(filePath));
@@ -353,34 +348,6 @@ async function removeMigratedSource(source: StashPaths, marker: MigrationMarker)
 	});
 }
 
-function assertRegularOwnedFile(stats: Stats, label: string): void {
-	if (stats.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
-	if (!stats.isFile()) throw new Error(`${label} must be a regular file`);
-	const currentUid = process.getuid?.();
-	if (currentUid !== undefined && stats.uid !== currentUid) {
-		throw new Error(`${label} must be owned by the current user`);
-	}
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-	try {
-		await lstat(filePath);
-		return true;
-	} catch (error) {
-		if (hasErrorCode(error, "ENOENT")) return false;
-		throw error;
-	}
-}
-
 function interruptAfter(stage: MigrationOptions["failAfter"], options: MigrationOptions): void {
 	if (options.failAfter === stage) throw new Error(INTERRUPTED_MESSAGE);
-}
-
-function hasErrorCode(value: unknown, code: string): boolean {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"code" in value &&
-		(value as { code: unknown }).code === code
-	);
 }

@@ -62,9 +62,9 @@ test("reconcileMutationIntents removes abandoned pre-commit add assets", async (
 	const intent = await beginAddIntent(paths, ENTRY_ID, DEAD_OWNER);
 	const assetDir = writeAsset(paths);
 
-	const result = await reconcileMutationIntents(paths, store);
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
 
-	assert.deepEqual(result, { removedStaging: 1, recoveredRestores: 0, skippedLive: 0 });
+	assert.equal(didRecoverRestore, false);
 	assert.equal(existsSync(assetDir), false);
 	assert.equal(existsSync(intent.filePath), false);
 });
@@ -76,9 +76,9 @@ test("reconcileMutationIntents preserves assets after an add commit", async () =
 	const assetDir = writeAsset(paths);
 	await store.add({ id: ENTRY_ID, text: "committed", assetCount: 1 });
 
-	const result = await reconcileMutationIntents(paths, store);
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
 
-	assert.deepEqual(result, { removedStaging: 0, recoveredRestores: 0, skippedLive: 0 });
+	assert.equal(didRecoverRestore, false);
 	assert.equal(existsSync(assetDir), true);
 	assert.equal(existsSync(intent.filePath), false);
 });
@@ -91,9 +91,9 @@ test("reconcileMutationIntents rolls back an interrupted restore", async () => {
 	const intent = await beginRestoreIntent(paths, entry, DEAD_OWNER);
 	await store.pop(entry.id);
 
-	const result = await reconcileMutationIntents(paths, store);
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
 
-	assert.deepEqual(result, { removedStaging: 0, recoveredRestores: 1, skippedLive: 0 });
+	assert.equal(didRecoverRestore, true);
 	assert.deepEqual(store.entries, [entry]);
 	assert.equal(existsSync(intent.filePath), false);
 });
@@ -105,9 +105,9 @@ test("reconcileMutationIntents clears a restore intent when the entry was not re
 	await store.add({ ...entry });
 	const intent = await beginRestoreIntent(paths, entry, DEAD_OWNER);
 
-	const result = await reconcileMutationIntents(paths, store);
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
 
-	assert.deepEqual(result, { removedStaging: 0, recoveredRestores: 0, skippedLive: 0 });
+	assert.equal(didRecoverRestore, false);
 	assert.deepEqual(store.entries, [entry]);
 	assert.equal(existsSync(intent.filePath), false);
 });
@@ -118,9 +118,9 @@ test("reconcileMutationIntents does not touch a live operation", async () => {
 	const intent = await beginAddIntent(paths, ENTRY_ID);
 	const assetDir = writeAsset(paths);
 
-	const result = await reconcileMutationIntents(paths, store);
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
 
-	assert.deepEqual(result, { removedStaging: 0, recoveredRestores: 0, skippedLive: 1 });
+	assert.equal(didRecoverRestore, false);
 	assert.equal(existsSync(assetDir), true);
 	assert.equal(existsSync(intent.filePath), true);
 	await completeIntent(intent);
