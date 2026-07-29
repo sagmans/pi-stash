@@ -1,5 +1,13 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -23,6 +31,15 @@ const DEAD_OWNER: MutationIntentOwner = {
 	host: hostname(),
 	startedAt: CREATED_AT,
 	token: "dead-owner-token",
+	generation: "dead-generation",
+};
+const STALE_GENERATION_STARTED_AT = 1_000_000_000_000;
+const STALE_GENERATION_OWNER: MutationIntentOwner = {
+	pid: process.pid,
+	host: hostname(),
+	startedAt: STALE_GENERATION_STARTED_AT,
+	token: "stale-generation-token",
+	generation: "stale-generation",
 };
 
 let baseDir: string;
@@ -140,4 +157,35 @@ test("completeIntent is idempotent and removes an empty intent directory", async
 		existsSync(baseDir) ? readdirSync(baseDir).filter((name) => name.includes("intent")) : [],
 		[],
 	);
+});
+
+test("reconcileMutationIntents removes assets owned by a stale generation on the current pid", async () => {
+	const paths = pathsFor("/stale-generation-add");
+	const store = await loadStashStore(paths);
+	const intent = await beginAddIntent(paths, ENTRY_ID, STALE_GENERATION_OWNER);
+	const assetDir = writeAsset(paths);
+
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
+
+	assert.equal(didRecoverRestore, false);
+	assert.equal(existsSync(assetDir), false);
+	assert.equal(existsSync(intent.filePath), false);
+});
+
+test("reconcileMutationIntents recovers a dead legacy owner without generation", async () => {
+	const paths = pathsFor("/legacy-owner-add");
+	const store = await loadStashStore(paths);
+	const intent = await beginAddIntent(paths, ENTRY_ID, DEAD_OWNER);
+	const raw = JSON.parse(readFileSync(intent.filePath, "utf8")) as {
+		owner: { generation?: string };
+	};
+	delete raw.owner.generation;
+	writeFileSync(intent.filePath, `${JSON.stringify(raw, null, 2)}\n`);
+	const assetDir = writeAsset(paths);
+
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
+
+	assert.equal(didRecoverRestore, false);
+	assert.equal(existsSync(assetDir), false);
+	assert.equal(existsSync(intent.filePath), false);
 });

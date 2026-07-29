@@ -424,7 +424,7 @@ async function restoreEntry(
 			throw error;
 		}
 	}
-	if (editorBlocked || signal?.aborted) return;
+	if (editorBlocked || (!resolved && signal?.aborted)) return;
 	if (!resolved) {
 		refreshWidget(ui, store);
 		safeNotify(ui, missingMessage, "warning");

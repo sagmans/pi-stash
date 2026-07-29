@@ -30,11 +30,11 @@ import {
 	refreshWidget,
 	type StashUi,
 } from "../src/index.ts";
-import { beginAddIntent, beginRestoreIntent } from "../src/intents.ts";
+import { beginAddIntent, beginRestoreIntent, reconcileMutationIntents } from "../src/intents.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { removePrivateDirectory as removeAssetDir } from "../src/private-fs.ts";
-import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
+import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/store.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const DEAD_PROCESS_ID = 2_147_483_647;
@@ -524,6 +524,34 @@ test("doPop warns when selector matches nothing", async () => {
 	await doPop(ui, store, paths, "999");
 
 	assert.ok(ui.notifs.some((n) => n.type === "warning"));
+});
+
+test("doPop finalizes the restore intent when an abort fires after the durable removal", async () => {
+	const paths = resolveStashPaths("/restore-abort", baseDir);
+	const seed = await loadStashStore(paths);
+	await seed.add({ text: "restore me" });
+	const controller = new AbortController();
+	// Fire the abort once the pop mutation has durably committed (the stash file
+	// now holds zero entries) but before restoreEntry can finalize the intent.
+	const store = await loadStashStore(paths, Date.now, async (filePath, file) => {
+		const outcome = await writeStashFile(filePath, file);
+		if (file.entries.length === 0) controller.abort();
+		return outcome;
+	});
+	const ui = fakeUi();
+
+	await doPop(ui, store, paths, undefined, controller.signal);
+
+	// The restore already took effect durably: the editor holds the draft and the
+	// stash no longer lists it.
+	assert.equal(ui.editorText, "restore me");
+	assert.equal((await loadStashStore(paths)).entryCount, 0);
+	// The crash-recovery intent must be finalized rather than abandoned on disk,
+	// where a later reconciliation would treat it as an interrupted restore.
+	assert.equal(existsSync(`${paths.stashFile}.intents`), false, "restore intent finalized");
+	const reconciled = await loadStashStore(paths);
+	await reconcileMutationIntents(paths, reconciled);
+	assert.equal(reconciled.entryCount, 0, "reconciliation did not resurrect the restored draft");
 });
 
 test("doAssetCleanup retains editor references and retries failed lease cleanup", async () => {
@@ -1144,6 +1172,7 @@ test("session startup reconciles interrupted add and restore mutations", async (
 			host: hostname(),
 			startedAt: Date.now(),
 			token: "dead-session",
+			generation: "dead-generation",
 		};
 		await beginRestoreIntent(paths, restored, deadOwner);
 		await store.pop(restored.id);

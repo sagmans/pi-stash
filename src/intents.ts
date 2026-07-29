@@ -16,7 +16,7 @@ import {
 	syncPrivateDirectory,
 	writePrivateFileExclusive,
 } from "./private-fs.ts";
-import type { StashStore } from "./store.ts";
+import { readProcessGeneration, type StashStore } from "./store.ts";
 import { createNewId, isRecord, isSafeEntryId, normalizeEntry, type StashEntry } from "./types.ts";
 
 const INTENT_SCHEMA_VERSION = 1;
@@ -29,6 +29,7 @@ export type MutationIntentOwner = {
 	host: string;
 	startedAt: number;
 	token: string;
+	generation?: string;
 };
 
 type AddIntentData = {
@@ -56,24 +57,31 @@ export type MutationIntent = {
 export async function beginAddIntent(
 	paths: StashPaths,
 	id: string,
-	owner: MutationIntentOwner = currentOwner(),
+	owner?: MutationIntentOwner,
 ): Promise<MutationIntent> {
 	if (!isSafeEntryId(id)) throw new Error("invalid add intent id");
-	return writeIntent(paths, { schemaVersion: INTENT_SCHEMA_VERSION, kind: "add", id, owner });
+	const resolvedOwner = owner ?? (await currentOwner());
+	return writeIntent(paths, {
+		schemaVersion: INTENT_SCHEMA_VERSION,
+		kind: "add",
+		id,
+		owner: resolvedOwner,
+	});
 }
 
 export async function beginRestoreIntent(
 	paths: StashPaths,
 	entry: StashEntry,
-	owner: MutationIntentOwner = currentOwner(),
+	owner?: MutationIntentOwner,
 ): Promise<MutationIntent> {
 	const normalized = normalizeEntry(entry);
 	if (!normalized) throw new Error("invalid restore intent entry");
+	const resolvedOwner = owner ?? (await currentOwner());
 	return writeIntent(paths, {
 		schemaVersion: INTENT_SCHEMA_VERSION,
 		kind: "restore",
 		id: normalized.id,
-		owner,
+		owner: resolvedOwner,
 		entry: normalized,
 	});
 }
@@ -114,7 +122,7 @@ export async function reconcileMutationIntents(
 	for (const entry of entries) {
 		if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(MALFORMED_INTENT_MESSAGE);
 		const intent = await readIntent(path.join(root, entry.name));
-		if (ownerMayBeLive(intent.data.owner)) continue;
+		if (await ownerMayBeLive(intent.data.owner)) continue;
 		if (intent.data.kind === "add") {
 			if (!store.entries.some((stashEntry) => stashEntry.id === intent.data.id)) {
 				await remove(paths.assetDir(intent.data.id));
@@ -187,27 +195,32 @@ function isOwner(value: unknown): value is MutationIntentOwner {
 		Number.isFinite(value.startedAt) &&
 		typeof value.startedAt === "number" &&
 		typeof value.token === "string" &&
-		value.token.length > 0
+		value.token.length > 0 &&
+		(value.generation === undefined ||
+			(typeof value.generation === "string" && value.generation.length > 0))
 	);
 }
 
-function currentOwner(): MutationIntentOwner {
+async function currentOwner(): Promise<MutationIntentOwner> {
 	return {
 		pid: process.pid,
 		host: hostname(),
 		startedAt: Date.now(),
 		token: createNewId(),
+		generation: await readProcessGeneration(process.pid),
 	};
 }
 
-function ownerMayBeLive(owner: MutationIntentOwner): boolean {
+async function ownerMayBeLive(owner: MutationIntentOwner): Promise<boolean> {
 	if (owner.host !== hostname()) return true;
 	try {
 		process.kill(owner.pid, 0);
-		return true;
 	} catch (error) {
 		return !hasErrorCode(error, "ESRCH");
 	}
+	const generation = await readProcessGeneration(owner.pid).catch(() => undefined);
+	if (generation && owner.generation) return generation === owner.generation;
+	return true;
 }
 
 function intentRoot(paths: StashPaths): string {

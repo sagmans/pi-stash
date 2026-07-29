@@ -33,6 +33,9 @@ All notable changes to this project are documented here. This format follows
 - Cancel queued commands and overlays during shutdown and sanitize all untrusted terminal text.
 - Keep unsupported future schemas untouched while surfacing safe recovery guidance for corruption and cleanup failures.
 - Pass trusted-publishing JSON and command arguments without shell reinterpretation.
+- Verify the installed TypeScript package entry outside Node's `node_modules` stripping boundary while preserving its default-only extension contract.
+- Reject clipboard-image path prefixes with invalid filename suffixes, migrate restored-image leases, and sync final legacy-source removal before completing migration.
+- Match mutation intents to process generations and finalize committed restore intents even when shutdown cancels subsequent UI work.
 
 [Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0
