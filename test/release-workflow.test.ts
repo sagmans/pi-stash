@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -63,4 +65,59 @@ test("publication cannot bypass the complete matrix or rebuild its artifact", ()
 	assert.match(publishJob, /npm publish "\$package" --provenance --access public/);
 	assert.doesNotMatch(publishJob, /actions\/checkout|NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./);
 	assert.doesNotMatch(publishJob, /npm pack|npm run|continue-on-error:|if:\s*\$\{\{\s*always\(\)/);
+});
+
+const ENTRY_HELPER = path.resolve("scripts/release/verify-package-entry.mjs");
+const ENTRY_PACKAGE_MANIFEST = JSON.stringify({
+	name: "@sagmans/pi-stash",
+	version: "0.0.0",
+	type: "module",
+	main: "./index.ts",
+	exports: { ".": "./index.ts" },
+});
+
+function withInstalledPackage(entrySource: string, run: (installRoot: string) => void): void {
+	const installRoot = mkdtempSync(path.join(tmpdir(), "pi-stash-entry-test-"));
+	try {
+		const pkgDir = path.join(installRoot, "node_modules", "@sagmans", "pi-stash");
+		mkdirSync(pkgDir, { recursive: true });
+		writeFileSync(path.join(pkgDir, "package.json"), ENTRY_PACKAGE_MANIFEST);
+		writeFileSync(path.join(pkgDir, "index.ts"), entrySource);
+		run(installRoot);
+	} finally {
+		rmSync(installRoot, { recursive: true, force: true });
+	}
+}
+
+test("package entry verifier accepts a TypeScript-only default extension function", () => {
+	withInstalledPackage("export default function piStash(): void {}\n", (installRoot) => {
+		const result = spawnSync(process.execPath, [ENTRY_HELPER, installRoot], {
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 0, result.stderr);
+	});
+});
+
+test("package entry verifier rejects a non-function default export", () => {
+	withInstalledPackage(
+		'const entry: string = "pi-stash";\nexport default entry;\n',
+		(installRoot) => {
+			const result = spawnSync(process.execPath, [ENTRY_HELPER, installRoot], {
+				encoding: "utf8",
+			});
+			assert.notEqual(result.status, 0);
+		},
+	);
+});
+
+test("package entry verifier rejects a TypeScript-only package that adds a named export", () => {
+	withInstalledPackage(
+		"export default function piStash(): void {}\nexport const extra = 1;\n",
+		(installRoot) => {
+			const result = spawnSync(process.execPath, [ENTRY_HELPER, installRoot], {
+				encoding: "utf8",
+			});
+			assert.notEqual(result.status, 0);
+		},
+	);
 });

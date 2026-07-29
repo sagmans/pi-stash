@@ -79,11 +79,7 @@ jobs:
           package="$PWD/$1"
           install_root="$RUNNER_TEMP/pi-stash-package"
           npm install --ignore-scripts --prefix "$install_root" "$package"
-          cd "$install_root"
-          node --input-type=module -e '
-            const api = await import("@sagmans/pi-stash");
-            if (typeof api.default !== "function" || Object.keys(api).join() !== "default") process.exit(1);
-          '
+          node scripts/release/verify-package-entry.mjs "$install_root"
 
   publish:
     needs: [package, verify]
