@@ -8,6 +8,7 @@ const PACKAGE_LOCK_PATH = path.resolve("package-lock.json");
 const TSCONFIG_PATH = path.resolve("tsconfig.json");
 const CHANGELOG_PATH = path.resolve("CHANGELOG.md");
 const README_PATH = path.resolve("README.md");
+const MAINTAINER_GUIDE_PATH = path.resolve("docs/maintainer-development.md");
 const UNRELEASED_HEADING = "## [Unreleased]";
 const SUPPORTED_PI_VERSION = "0.82.1";
 const SUPPORTED_PI_TUI_RANGE = ">=0.82.1 <0.83.0";
@@ -33,6 +34,7 @@ const packageLock = JSON.parse(readFileSync(PACKAGE_LOCK_PATH, "utf8")) as Packa
 const tsconfig = JSON.parse(readFileSync(TSCONFIG_PATH, "utf8")) as TypeScriptConfig;
 const changelog = readFileSync(CHANGELOG_PATH, "utf8");
 const readme = readFileSync(README_PATH, "utf8");
+const maintainerGuide = readFileSync(MAINTAINER_GUIDE_PATH, "utf8");
 
 test("candidate gates warnings and uses native TypeScript stripping", () => {
 	assert.equal(manifest.scripts.audit, "npm audit --audit-level=moderate");
@@ -45,6 +47,9 @@ test("candidate depends only on the Pi TUI surface it imports", () => {
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], undefined);
 	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_VERSION);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_TUI_RANGE);
+	assert.equal(manifest.devDependencies.husky, undefined);
+	assert.match(maintainerGuide, /Keep the user-level `core\.hooksPath` authoritative/u);
+	assert.doesNotMatch(maintainerGuide, /git config .*core\.hooksPath/u);
 	assert.ok(readme.includes(`Pi \`${SUPPORTED_PI_VERSION}\``));
 });
 

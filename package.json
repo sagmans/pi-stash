@@ -55,7 +55,6 @@
 		"@biomejs/biome": "2.5.3",
 		"@earendil-works/pi-tui": "0.82.1",
 		"@types/node": "24.13.2",
-		"husky": "9.1.7",
 		"typescript": "7.0.2"
 	}
 }

@@ -43,12 +43,8 @@ Two Biome rules are disabled in `biome.json` to keep the development template
 aligned with pi-history. pi-stash does not currently rely on either exception;
 remove an override only through a coordinated template update.
 
-Git hooks via Husky: pre-commit runs `npm run check`, pre-push runs
-`npm run typecheck && npm test`. Hooks are dev-only: there is deliberately no
-`prepare` script, because pi runs `npm install` inside its package clones and
-hooks must never install on user machines. Maintainers opt in once after
-cloning:
-
-```bash
-npx husky
-```
+Keep the user-level `core.hooksPath` authoritative; do not override it per clone.
+The tracked `.husky/pre-commit` and `.husky/pre-push` scripts are optional targets
+for global hook dispatchers. They run `npm run check` before commits and
+`npm run typecheck && npm test` before pushes. Run those gates explicitly when
+the global hooks do not dispatch repository hooks.

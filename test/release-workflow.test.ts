@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
+const CI_WORKFLOW = readFileSync(path.resolve(".github/workflows/ci.yml"), "utf8");
 const RELEASE_WORKFLOW = path.resolve(".github/workflows/release.yml");
 const WORKFLOW = readFileSync(RELEASE_WORKFLOW, "utf8");
 
@@ -14,6 +15,14 @@ function job(name: string, nextName?: string): string {
 	assert.notEqual(end, -1, `missing ${nextName} job`);
 	return WORKFLOW.slice(start, end);
 }
+
+test("only the release workflow runs for version tags", () => {
+	const ciHeader = CI_WORKFLOW.slice(0, CI_WORKFLOW.indexOf("jobs:\n"));
+	const releaseHeader = WORKFLOW.slice(0, WORKFLOW.indexOf("jobs:\n"));
+
+	assert.doesNotMatch(ciHeader, /tags:/);
+	assert.match(releaseHeader, /push:\n\s+tags: \["v\*"\]/);
+});
 
 test("release verifies one immutable package across every supported matrix leg", () => {
 	const packageJob = job("package", "verify");

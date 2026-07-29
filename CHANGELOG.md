@@ -22,6 +22,7 @@ All notable changes to this project are documented here. This format follows
 - Narrow the published module surface to the Pi installer and include its operational documentation.
 - Depend only on Pi's injected extension contract and the directly imported TUI surface, avoiding a duplicate host SDK and provider stack.
 - Keep slash commands as the reliable fallback when no compatible prefix provider is active.
+- Reduce internal filesystem, lifecycle, overlay, widget, test, and maintainer-tooling surfaces without changing stash behavior.
 
 ### Fixed
 
