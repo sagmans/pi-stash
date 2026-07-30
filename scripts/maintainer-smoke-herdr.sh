@@ -79,6 +79,7 @@ create_pane() {
 	local phase="$1" split_json launch_command
 	split_json="$(
 		herdr pane split --current --direction right --ratio "$PANE_RATIO" --cwd "$repo_root" \
+			--env "TMPDIR=$tmp_root" \
 			--env "HOME=$smoke_home" \
 			--env "PI_CODING_AGENT_DIR=$agent_dir" \
 			--env "PI_SKIP_VERSION_CHECK=1" \
@@ -94,8 +95,8 @@ create_pane() {
 	herdr wait output "$pane_id" --match "$(basename -- "$repo_root")" --source recent-unwrapped \
 		--timeout "$READY_TIMEOUT_MS" >/dev/null || fail "created shell did not become ready"
 
-	printf -v launch_command 'exec env HOME=%q PI_CODING_AGENT_DIR=%q PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 PI_STASH_SMOKE_PHASE=%q PI_STASH_SMOKE_EXTENSION=%q PI_STASH_SMOKE_IMAGE=%q PI_STASH_SMOKE_CANARY=%q %q --approve --no-session -e %q -e %q' \
-		"$smoke_home" "$agent_dir" "$phase" "$extension_path" "$clipboard_image" "$SMOKE_CANARY" \
+	printf -v launch_command 'exec env TMPDIR=%q HOME=%q PI_CODING_AGENT_DIR=%q PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 PI_STASH_SMOKE_PHASE=%q PI_STASH_SMOKE_EXTENSION=%q PI_STASH_SMOKE_IMAGE=%q PI_STASH_SMOKE_CANARY=%q %q --approve --no-session -e %q -e %q' \
+		"$tmp_root" "$smoke_home" "$agent_dir" "$phase" "$extension_path" "$clipboard_image" "$SMOKE_CANARY" \
 		"$pi_bin" "$extension_path" "$driver_path"
 	herdr pane run "$pane_id" "$launch_command" >/dev/null
 	herdr wait output "$pane_id" --match "pi v$pi_version" --source recent-unwrapped \
@@ -177,12 +178,23 @@ herdr wait output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source rec
 herdr pane run "$pane_id" "/stash-restore" >/dev/null
 herdr wait output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
+herdr wait output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored editor was not cleared for cleanup"
+herdr pane run "$pane_id" "/stash-cleanup" >/dev/null
+herdr wait output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored image cleanup did not complete"
 assert_clean_output
 node -e '
-const { readFileSync } = require("node:fs");
-const file = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const { existsSync, readFileSync, readdirSync } = require("node:fs");
+const path = require("node:path");
+const filePath = process.argv[1];
+const file = JSON.parse(readFileSync(filePath, "utf8"));
 if (!Array.isArray(file.entries) || file.entries.length !== 0) process.exit(1);
-' "$stash_file" || fail "restored stash entry remained on disk"
+if (!Array.isArray(file.restoredAssetLeases) || file.restoredAssetLeases.length !== 0) process.exit(1);
+if (!Array.isArray(file.pendingAssetCleanup) || file.pendingAssetCleanup.length !== 0) process.exit(1);
+const assetsRoot = path.join(path.dirname(filePath), `${file.cwd}-assets`);
+if (existsSync(assetsRoot) && readdirSync(assetsRoot).length !== 0) process.exit(1);
+' "$stash_file" || fail "restored stash or image cleanup remained on disk"
 close_pane || fail "second Pi launch left a live process"
 
 printf 'pi-stash Herdr smoke passed: packaged draft and image survived two launches, restored, and were removed\n'

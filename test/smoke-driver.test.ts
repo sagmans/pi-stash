@@ -6,6 +6,7 @@ import installSmokeDriver from "../scripts/smoke/driver.ts";
 const EXPECTED_EXTENSION = "/tmp/pi-stash-package/index.ts";
 const IMAGE_PATH = "/tmp/pi-clipboard-00000000-0000-4000-8000-000000000001.png";
 const CANARY = "PI_STASH_SMOKE_DRAFT_7E4A9C2D";
+const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
 
 type Listener = (payload?: unknown) => void;
 type SessionHandler = (event: unknown, context: unknown) => void | Promise<void>;
@@ -54,6 +55,11 @@ function createPi(commandPath = EXPECTED_EXTENSION) {
 			},
 			{
 				name: "stash-restore",
+				source: "extension",
+				sourceInfo: { path: commandPath },
+			},
+			{
+				name: "stash-cleanup",
 				source: "extension",
 				sourceInfo: { path: commandPath },
 			},
@@ -113,6 +119,34 @@ test("smoke driver seeds a synthetic draft through the packaged extension bindin
 		assert.equal(firedDraft, `Synthetic smoke draft\n${CANARY}\n${IMAGE_PATH}`);
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.deepEqual(notifications, ["PI_STASH_SMOKE_STASHED"]);
+	});
+});
+
+test("smoke driver clears the restored editor before packaged asset cleanup", async () => {
+	await withSmokeEnvironment("restore", async () => {
+		const { handlers } = createPi();
+		let editor = "";
+		const notifications: string[] = [];
+		await handlers.get("session_start")?.(
+			{},
+			{
+				mode: "tui",
+				hasUI: true,
+				ui: {
+					getEditorText: () => editor,
+					setEditorText: (text: string) => {
+						editor = text;
+					},
+					notify: (message: string) => notifications.push(message),
+				},
+			},
+		);
+
+		editor = `Synthetic smoke draft\n${CANARY}\n${IMAGE_PATH}`;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		assert.equal(editor, "");
+		assert.ok(notifications.includes(CLEANUP_READY_MARKER));
 	});
 });
 

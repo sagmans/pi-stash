@@ -11,10 +11,11 @@ const STASH_KEY = "s";
 const PREFIX_LABEL = "smoke";
 const STASHED_MARKER = "PI_STASH_SMOKE_STASHED";
 const RESTORE_READY_MARKER = "PI_STASH_SMOKE_RESTORE_READY";
+const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
 const FAILED_MARKER = "PI_STASH_SMOKE_FAILED";
 const POLL_INTERVAL_MS = 25;
 const STASH_TIMEOUT_MS = 15_000;
-const REQUIRED_COMMANDS = ["stash", "stash-restore"] as const;
+const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-cleanup"] as const;
 
 type Claim = {
 	eventId: string;
@@ -88,6 +89,22 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 		}
 		if (config.phase === "restore") {
 			ctx.ui.notify(RESTORE_READY_MARKER, "info");
+			pollDeadline = Date.now() + STASH_TIMEOUT_MS;
+			const poll = () => {
+				if (ctx.ui.getEditorText().includes(config.canary)) {
+					pollTimer = undefined;
+					ctx.ui.setEditorText("");
+					ctx.ui.notify(CLEANUP_READY_MARKER, "info");
+					return;
+				}
+				if (Date.now() >= pollDeadline) {
+					pollTimer = undefined;
+					ctx.ui.notify(FAILED_MARKER, "error");
+					return;
+				}
+				pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+			};
+			pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
 			return;
 		}
 		if (!stashClaim) {
