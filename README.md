@@ -31,6 +31,17 @@ runtime: macOS or Linux, Node.js `>=22.19.0`, Pi `0.82.1`, interactive TUI mode.
 Native Windows is unsupported because storage relies on POSIX ownership and
 permission guarantees.
 
+Oh My Pi hosts the same package through its pi-compatible extension loader:
+
+```bash
+omp plugin install @sagmans/pi-stash
+```
+
+Oh My Pi support is contract-level: the extension matches Oh My Pi's documented
+extension context and carries contract tests for it, but the packaged
+two-launch runtime smoke has not been completed under Oh My Pi. Report
+divergent behavior through the bug channel.
+
 ## Usage
 
 | Action | Command | Optional prefix binding |
