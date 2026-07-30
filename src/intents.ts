@@ -143,7 +143,7 @@ export async function reconcileMutationIntents(
 					id: restore.id,
 					text: restore.text,
 					createdAt: restore.createdAt,
-					message: restore.message,
+					label: restore.label,
 					assetCount: restore.assetCount,
 				});
 				didRecoverRestore = true;

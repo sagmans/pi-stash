@@ -174,7 +174,7 @@ close_pane || fail "first Pi launch left a live process"
 create_pane restore
 herdr wait output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "second Pi launch did not load packaged commands"
-herdr pane run "$pane_id" "/stash-pop" >/dev/null
+herdr pane run "$pane_id" "/stash-restore" >/dev/null
 herdr wait output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
 assert_clean_output

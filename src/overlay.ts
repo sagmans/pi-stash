@@ -109,11 +109,11 @@ export function detailHeader(item: IndexedEntry, theme: OverlayTheme): string {
 	return ` ${title}${img}  ${age}`;
 }
 
-/** Lines for the detail body: optional message, then the full draft text. */
+/** Lines for the detail body: optional label, then the full draft text. */
 export function detailBody(item: IndexedEntry, theme: OverlayTheme): string[] {
 	const lines: string[] = [];
-	const message = item.entry.message?.trim();
-	if (message) lines.push(theme.fg("muted", `note: ${sanitizeTerminalLine(message)}`));
+	const label = item.entry.label?.trim();
+	if (label) lines.push(theme.fg("muted", `label: ${sanitizeTerminalLine(label)}`));
 	const text = sanitizeTerminalText(item.entry.text);
 	lines.push(theme.fg("text", text.length > 0 ? text : EMPTY_DRAFT_LABEL));
 	return lines;
@@ -316,7 +316,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		const normalized = query.trim().toLowerCase();
 		this.filtered = normalized
 			? this.items.filter((it) => {
-					const hay = `${it.entry.text} ${it.entry.message ?? ""}`.toLowerCase();
+					const hay = `${it.entry.text} ${it.entry.label ?? ""}`.toLowerCase();
 					return normalized.split(/\s+/).every((token) => hay.includes(token));
 				})
 			: this.items;

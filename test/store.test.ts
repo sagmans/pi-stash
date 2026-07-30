@@ -238,12 +238,12 @@ test("add honors caller-supplied id and atomically queues transferred assets", a
 	const entry = await store.add({
 		id: "fixed-id",
 		text: "x",
-		message: "m",
+		label: "m",
 		assetCount: 3,
 		cleanupIds: ["restored-entry"],
 	});
 	assert.equal(entry.id, "fixed-id");
-	assert.equal(entry.message, "m");
+	assert.equal(entry.label, "m");
 	assert.equal(entry.assetCount, 3);
 	assert.deepEqual(store.pendingAssetCleanupIds, ["restored-entry"]);
 });
@@ -254,10 +254,10 @@ test("add rejects path-bearing entry ids", async () => {
 	assert.equal(store.entryCount, 0);
 });
 
-test("add drops empty message and zero assetCount", async () => {
+test("add drops empty label and zero assetCount", async () => {
 	const store = await storeFor();
-	const entry = await store.add({ text: "x", message: "   ", assetCount: 0 });
-	assert.equal(entry.message, undefined);
+	const entry = await store.add({ text: "x", label: "   ", assetCount: 0 });
+	assert.equal(entry.label, undefined);
 	assert.equal(entry.assetCount, undefined);
 });
 
@@ -537,7 +537,7 @@ test("migrates populated schema v1 state without losing owned assets", async () 
 
 	assert.equal(migrated.schemaVersion, STASH_SCHEMA_VERSION);
 	assert.equal(store.entries[0]?.id, LEGACY_ENTRY_ID);
-	assert.equal(store.entries[0]?.message, "legacy note");
+	assert.equal(store.entries[0]?.label, "legacy note");
 	assert.equal(store.entries[0]?.assetCount, 1);
 	assert.deepEqual(store.pendingAssetCleanupIds, ["stale-assets"]);
 	assert.equal(readFileSync(assetPath, "utf8"), "synthetic-image");

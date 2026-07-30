@@ -208,7 +208,7 @@ export async function doAssetCleanup(
 
 export async function doStash(
 	target: StashTarget,
-	message?: string,
+	label?: string,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
@@ -239,7 +239,7 @@ export async function doStash(
 		await store.add({
 			id,
 			text: staged.text,
-			message,
+			label,
 			assetCount: staged.count > 0 ? staged.count : undefined,
 			cleanupIds: staged.transferredAssetDirs.map((directory) => path.basename(directory)),
 		});
@@ -426,7 +426,7 @@ async function restoreEntry(
 	);
 }
 
-export async function doPop(
+export async function doRestore(
 	target: StashTarget,
 	selector?: string,
 	signal?: AbortSignal,
@@ -606,12 +606,12 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 			await enqueueOperation(session, (signal) => openOverlay(session, signal));
 		},
 	});
-	pi.registerCommand("stash-pop", {
+	pi.registerCommand("stash-restore", {
 		description: "Restore index-or-id (default newest) into an empty editor and remove stash",
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueueOperation(session, (signal) => doPop(session, parseArg(args), signal));
+			await enqueueOperation(session, (signal) => doRestore(session, parseArg(args), signal));
 		},
 	});
 	pi.registerCommand("stash-drop", {

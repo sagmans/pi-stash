@@ -37,7 +37,7 @@ permission guarantees.
 | --- | --- | --- |
 | Stash draft | `/stash [label]` | `prefix+s` |
 | List drafts | `/stash-list` | `prefix+Shift+S` |
-| Restore newest or selected entry | `/stash-pop [index-or-id]` | — |
+| Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
 | Delete all entries after confirmation | `/stash-clear` | — |

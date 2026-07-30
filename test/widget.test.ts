@@ -45,8 +45,8 @@ test("omits the shortcut hint when no binding is available", () => {
 	assert.ok(header?.includes("1"));
 });
 
-test("prefers message over first-line preview", () => {
-	const lines = render([entry({ text: "body line one\nbody line two", message: "my label" })]);
+test("prefers label over first-line preview", () => {
+	const lines = render([entry({ text: "body line one\nbody line two", label: "my label" })]);
 	assert.ok(lines[1]?.includes("my label"));
 	assert.ok(!lines[1]?.includes("body line one"));
 });
@@ -68,7 +68,7 @@ test("shows five entries and reports fixed-policy overflow", () => {
 
 test("every widget row fits terminal columns at narrow and Unicode boundaries", () => {
 	const entries = [
-		entry({ message: `e\u0301 ${"界".repeat(20)} 🧑🏽‍💻 family 👨‍👩‍👧‍👦` }),
+		entry({ label: `e\u0301 ${"界".repeat(20)} 🧑🏽‍💻 family 👨‍👩‍👧‍👦` }),
 		entry({ text: "second" }),
 	];
 	for (const width of [0, 1, 2, 5, 12, 20, 40]) {
@@ -94,7 +94,7 @@ test("truncateForWidget measures terminal columns instead of code units", () => 
 });
 
 test("widget labels cannot emit terminal controls or extra rows", () => {
-	const lines = render([entry({ message: "safe\u001b[31m red\u001b[0m\nforged\u202erow" })]);
+	const lines = render([entry({ label: "safe\u001b[31m red\u001b[0m\nforged\u202erow" })]);
 
 	assert.equal(lines.length, 2);
 	assert.equal(

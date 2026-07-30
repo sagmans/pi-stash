@@ -14,7 +14,7 @@ const RESTORE_READY_MARKER = "PI_STASH_SMOKE_RESTORE_READY";
 const FAILED_MARKER = "PI_STASH_SMOKE_FAILED";
 const POLL_INTERVAL_MS = 25;
 const STASH_TIMEOUT_MS = 15_000;
-const REQUIRED_COMMANDS = ["stash", "stash-pop"] as const;
+const REQUIRED_COMMANDS = ["stash", "stash-restore"] as const;
 
 type Claim = {
 	eventId: string;

@@ -68,7 +68,7 @@ function restoredEntry(): StashEntry {
 		id: ENTRY_ID,
 		text: "restore after crash",
 		createdAt: CREATED_AT,
-		message: "important",
+		label: "important",
 		assetCount: 1,
 	};
 }

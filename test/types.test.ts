@@ -23,12 +23,24 @@ test("normalizeEntry accepts a minimal valid entry", () => {
 	assert.deepEqual(normalizeEntry(VALID_ENTRY), VALID_ENTRY);
 });
 
-test("normalizeEntry accepts optional message and assetCount", () => {
-	assert.deepEqual(normalizeEntry({ ...VALID_ENTRY, message: "msg", assetCount: 2 }), {
+test("normalizeEntry accepts optional label and assetCount", () => {
+	assert.deepEqual(normalizeEntry({ ...VALID_ENTRY, label: "msg", assetCount: 2 }), {
 		...VALID_ENTRY,
-		message: "msg",
+		label: "msg",
 		assetCount: 2,
 	});
+});
+
+test("normalizeEntry maps a legacy message field to label", () => {
+	assert.deepEqual(normalizeEntry({ ...VALID_ENTRY, message: "old" }), {
+		...VALID_ENTRY,
+		label: "old",
+	});
+});
+
+test("normalizeEntry rejects a null label instead of treating it as absent", () => {
+	assert.equal(normalizeEntry({ ...VALID_ENTRY, label: null }), undefined);
+	assert.equal(normalizeEntry({ ...VALID_ENTRY, label: null, message: "old" }), undefined);
 });
 
 test("normalizeEntry rejects missing id or non-string text", () => {

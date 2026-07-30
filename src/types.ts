@@ -26,8 +26,8 @@ export type StashEntry = {
 	id: string;
 	text: string;
 	createdAt: number;
-	/** Optional user-supplied label from `/stash <msg>`. */
-	message?: string;
+	/** Optional user-supplied label from `/stash <label>`. */
+	label?: string;
 	/** Count of tmp-dir images persisted into the entry's asset dir. */
 	assetCount?: number;
 };
@@ -74,11 +74,13 @@ function isValidTimestamp(value: unknown): value is number {
 
 export function normalizeEntry(raw: unknown): StashEntry | undefined {
 	if (!isRecord(raw)) return undefined;
-	const { id, text, createdAt, message, assetCount } = raw;
+	const { id, text, createdAt, assetCount } = raw;
+	// Files written before the domain rename store the label as "message".
+	const label = raw.label !== undefined ? raw.label : raw.message;
 	if (typeof id !== "string" || !isSafeEntryId(id)) return undefined;
 	if (typeof text !== "string") return undefined;
 	if (!isValidTimestamp(createdAt)) return undefined;
-	if (message !== undefined && typeof message !== "string") return undefined;
+	if (label !== undefined && typeof label !== "string") return undefined;
 	if (
 		assetCount !== undefined &&
 		(typeof assetCount !== "number" || !Number.isSafeInteger(assetCount) || assetCount < 0)
@@ -86,7 +88,7 @@ export function normalizeEntry(raw: unknown): StashEntry | undefined {
 		return undefined;
 	}
 	const entry: StashEntry = { id, text, createdAt };
-	if (message !== undefined) entry.message = message;
+	if (label !== undefined) entry.label = label;
 	if (assetCount !== undefined) entry.assetCount = assetCount;
 	return entry;
 }

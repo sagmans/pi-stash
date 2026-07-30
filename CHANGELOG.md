@@ -6,16 +6,6 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
-### Changed
-
-- Bundle stash operation context into one session target and align storage wording with the domain language.
-
-### Fixed
-
-- Preserve restored-image leases when startup recovery reconciles a stale add intent, and treat a restore recovered by a concurrent session as complete instead of failing startup.
-- Reclaim orphaned lock-reclamation guards so an interrupted reclaim cannot wedge a worktree scope, and stop waiting indefinitely behind a live guard.
-- Load committed schema upgrades despite a failed directory sync, surfacing the durability warning once instead of disabling the scope.
-
 ## [0.1.0] - 2026-07-25
 
 ### Added
@@ -33,6 +23,8 @@ All notable changes to this project are documented here. This format follows
 - Depend only on Pi's injected extension contract and the directly imported TUI surface, avoiding a duplicate host SDK and provider stack.
 - Keep slash commands as the reliable fallback when no compatible prefix provider is active.
 - Reduce internal filesystem, lifecycle, overlay, widget, test, and maintainer-tooling surfaces without changing stash behavior.
+- Bundle stash operation context into one session target and align storage wording with the domain language.
+- Rename `/stash-pop` to `/stash-restore` and the stash entry `message` field to `label` to match the domain language; files holding the legacy field still load with their labels intact.
 
 ### Fixed
 
@@ -46,6 +38,9 @@ All notable changes to this project are documented here. This format follows
 - Verify the installed TypeScript package entry outside Node's `node_modules` stripping boundary while preserving its default-only extension contract.
 - Reject clipboard-image path prefixes with invalid filename suffixes, migrate restored-image leases, and sync final legacy-source removal before completing migration.
 - Match mutation intents to process generations and finalize committed restore intents even when shutdown cancels subsequent UI work.
+- Preserve restored-image leases when startup recovery reconciles a stale add intent, and treat a restore recovered by a concurrent session as complete instead of failing startup.
+- Reclaim orphaned lock-reclamation guards so an interrupted reclaim cannot wedge a worktree scope, and stop waiting indefinitely behind a live guard.
+- Load committed schema upgrades despite a failed directory sync, surfacing the durability warning once instead of disabling the scope.
 
 [Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0

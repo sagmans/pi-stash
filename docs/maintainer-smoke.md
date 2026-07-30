@@ -39,11 +39,11 @@ The script:
    public extension entry point alongside a maintainer smoke driver.
 3. Opens a non-focused pane and launches Pi with one-run project trust, update
    checks, and telemetry disabled. The driver verifies `/stash` and
-   `/stash-pop` came from the packaged entry point, then invokes the real stash
+   `/stash-restore` came from the packaged entry point, then invokes the real stash
    binding with the synthetic editor draft.
 4. Verifies the editor cleared and durable state owns one copied image, exits
    the first Pi process, and closes its pane.
-5. Starts a fresh pane and Pi process, invokes `/stash-pop`, verifies the full
+5. Starts a fresh pane and Pi process, invokes `/stash-restore`, verifies the full
    draft reappears, and confirms the stash entry is gone.
 6. Fails on timeouts, warnings, extension errors, live created panes, malformed
    state, or residual disposable data. Raw pane output remains in memory and

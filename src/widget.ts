@@ -33,7 +33,7 @@ export function truncateForWidget(value: string, width: number): string {
 }
 
 export function entryLabel(entry: StashEntry, width: number): string {
-	const label = entry.message?.trim() || firstNonEmptyLine(entry.text) || "(empty draft)";
+	const label = entry.label?.trim() || firstNonEmptyLine(entry.text) || "(empty draft)";
 	return truncateForWidget(sanitizeTerminalLine(label), width);
 }
 

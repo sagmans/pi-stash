@@ -21,7 +21,7 @@ import {
 	doAssetCleanup,
 	doClear,
 	doDrop,
-	doPop,
+	doRestore,
 	doStash,
 	drainAssetCleanup,
 	installPiStash,
@@ -41,7 +41,7 @@ const DEAD_PROCESS_ID = 2_147_483_647;
 const STASH_COMMAND_NAMES = [
 	"stash",
 	"stash-list",
-	"stash-pop",
+	"stash-restore",
 	"stash-drop",
 	"stash-cleanup",
 	"stash-clear",
@@ -364,7 +364,7 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	assert.ok(original);
 	const originalAssetDir = paths.assetDir(original.id);
 
-	await doPop({ ui, store, paths });
+	await doRestore({ ui, store, paths });
 	assert.deepEqual(store.restoredAssetLeaseIds, [original.id]);
 	let queuedAtRemoval: readonly string[] = [];
 	await doStash({ ui, store, paths }, undefined, async (assetDir) => {
@@ -383,14 +383,14 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	assert.equal(existsSync(paths.assetDir(transferred.id)), false);
 });
 
-test("doPop restores the newest draft into the editor and removes it", async () => {
+test("doRestore restores the newest draft into the editor and removes it", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
 	await store.add({ text: "first" });
 	await store.add({ text: "second" });
 	const ui = fakeUi();
 
-	await doPop({ ui, store, paths });
+	await doRestore({ ui, store, paths });
 
 	assert.equal(ui.editorText, "second");
 	assert.equal(store.entryCount, 1);
@@ -398,14 +398,14 @@ test("doPop restores the newest draft into the editor and removes it", async () 
 	assert.ok(ui.notifs.some((n) => n.message.startsWith("Restored")));
 });
 
-test("doPop keeps a committed restore when lock release fails", async () => {
+test("doRestore keeps a committed restore when lock release fails", async () => {
 	const paths = resolveStashPaths("/pop-unlock-failure", baseDir);
 	const seed = await loadStashStore(paths);
 	await seed.add({ text: "restored draft" });
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi();
 
-	await doPop({ ui, store, paths });
+	await doRestore({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	assert.equal(ui.editorText, "restored draft");
@@ -415,7 +415,7 @@ test("doPop keeps a committed restore when lock release fails", async () => {
 	);
 });
 
-test("doPop defaults to the newest draft added by another store", async () => {
+test("doRestore defaults to the newest draft added by another store", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const writer = await loadStashStore(paths);
 	await writer.add({ text: "older" });
@@ -423,19 +423,19 @@ test("doPop defaults to the newest draft added by another store", async () => {
 	await writer.add({ text: "newer" });
 	const ui = fakeUi();
 
-	await doPop({ ui, store: stale, paths });
+	await doRestore({ ui, store: stale, paths });
 
 	assert.equal(ui.editorText, "newer");
 	assert.equal(stale.entries[0]?.text, "older");
 });
 
-test("doPop blocks restore when typing begins while stash removal is waiting", async () => {
+test("doRestore blocks restore when typing begins while stash removal is waiting", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
 	await store.add({ text: "stashed" });
 	const ui = fakeUi();
 
-	const popping = doPop({ ui, store, paths });
+	const popping = doRestore({ ui, store, paths });
 	ui.editorText = `${ui.editorText} plus typing`;
 	await popping;
 
@@ -444,20 +444,20 @@ test("doPop blocks restore when typing begins while stash removal is waiting", a
 	assert.ok(ui.notifs.some((notification) => notification.type === "warning"));
 });
 
-test("doPop preserves a nonempty editor and leaves the stash untouched", async () => {
+test("doRestore preserves a nonempty editor and leaves the stash untouched", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
 	await store.add({ text: "stashed" });
 	const ui = fakeUi({ editorText: "current draft" });
 
-	await doPop({ ui, store, paths });
+	await doRestore({ ui, store, paths });
 
 	assert.equal(ui.editorText, "current draft");
 	assert.equal(store.entryCount, 1);
 	assert.ok(ui.notifs.some((notification) => notification.type === "warning"));
 });
 
-test("doPop restores the prior editor when durable removal fails", async () => {
+test("doRestore restores the prior editor when durable removal fails", async () => {
 	const paths = resolveStashPaths("/restore-failure", baseDir);
 	const writer = await loadStashStore(paths);
 	await writer.add({ text: "stashed" });
@@ -466,14 +466,14 @@ test("doPop restores the prior editor when durable removal fails", async () => {
 	});
 	const ui = fakeUi();
 
-	await assert.rejects(() => doPop({ ui, store, paths }), /write failed/);
+	await assert.rejects(() => doRestore({ ui, store, paths }), /write failed/);
 
 	assert.equal(ui.editorText, "");
 	assert.equal(store.entryCount, 1);
 	assert.equal((await loadStashStore(paths)).entryCount, 1);
 });
 
-test("doPop does not overwrite typing entered while a failed removal is pending", async () => {
+test("doRestore does not overwrite typing entered while a failed removal is pending", async () => {
 	const paths = resolveStashPaths("/restore-race", baseDir);
 	const writer = await loadStashStore(paths);
 	await writer.add({ text: "stashed" });
@@ -493,7 +493,7 @@ test("doPop does not overwrite typing entered while a failed removal is pending"
 	);
 	const ui = fakeUi();
 
-	const popping = doPop({ ui, store, paths });
+	const popping = doRestore({ ui, store, paths });
 	await writeStarted;
 	ui.editorText = "new typing";
 	rejectWrite?.(new Error("write failed"));
@@ -508,7 +508,7 @@ test("notifications sanitize untrusted selectors before terminal display", async
 	const paths = resolveStashPaths("/safe-notification", baseDir);
 	const ui = fakeUi();
 
-	await doPop({ ui, store, paths }, "missing\u001b[2J\u202e");
+	await doRestore({ ui, store, paths }, "missing\u001b[2J\u202e");
 
 	const notification = ui.notifs.at(-1)?.message ?? "";
 	assert.equal(notification.includes("\u001b"), false);
@@ -516,17 +516,17 @@ test("notifications sanitize untrusted selectors before terminal display", async
 	assert.ok(notification.includes("missing"));
 });
 
-test("doPop warns when selector matches nothing", async () => {
+test("doRestore warns when selector matches nothing", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
 	const ui = fakeUi();
 
-	await doPop({ ui, store, paths }, "999");
+	await doRestore({ ui, store, paths }, "999");
 
 	assert.ok(ui.notifs.some((n) => n.type === "warning"));
 });
 
-test("doPop finalizes the restore intent when an abort fires after the durable removal", async () => {
+test("doRestore finalizes the restore intent when an abort fires after the durable removal", async () => {
 	const paths = resolveStashPaths("/restore-abort", baseDir);
 	const seed = await loadStashStore(paths);
 	await seed.add({ text: "restore me" });
@@ -540,7 +540,7 @@ test("doPop finalizes the restore intent when an abort fires after the durable r
 	});
 	const ui = fakeUi();
 
-	await doPop({ ui, store, paths }, undefined, controller.signal);
+	await doRestore({ ui, store, paths }, undefined, controller.signal);
 
 	// The restore already took effect durably: the editor holds the draft and the
 	// stash no longer lists it.
@@ -940,16 +940,16 @@ test("registered commands execute the documented stash workflows", async () => {
 
 		await commands.get("stash")?.handler("release note", ctx);
 		assert.equal(ui.editorText, "");
-		assert.equal((await loadStashStore(paths)).entries[0]?.message, "release note");
+		assert.equal((await loadStashStore(paths)).entries[0]?.label, "release note");
 		await commands.get("stash-list")?.handler("", ctx);
 		assert.equal(listOpened, 1);
 
 		ui.editorText = "current work";
-		await commands.get("stash-pop")?.handler("0", ctx);
+		await commands.get("stash-restore")?.handler("0", ctx);
 		assert.equal(ui.editorText, "current work");
 		assert.ok(ui.notifs.some(({ message }) => message.includes("Clear or stash")));
 		ui.editorText = "";
-		await commands.get("stash-pop")?.handler("0", ctx);
+		await commands.get("stash-restore")?.handler("0", ctx);
 		assert.equal(ui.editorText, "saved through command");
 		assert.equal((await loadStashStore(paths)).entryCount, 0);
 
@@ -976,7 +976,7 @@ test("command help states selectors, editor prerequisites, and destructive effec
 
 	assert.match(commands.get("stash")?.description ?? "", /optional label.*clears editor/iu);
 	assert.match(commands.get("stash-list")?.description ?? "", /search.*empty editor/iu);
-	assert.match(commands.get("stash-pop")?.description ?? "", /index-or-id.*empty editor/iu);
+	assert.match(commands.get("stash-restore")?.description ?? "", /index-or-id.*empty editor/iu);
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
 	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);

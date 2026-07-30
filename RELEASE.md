@@ -24,7 +24,7 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
 
    The smoke packs the checkout, loads only that public package entry point,
    stashes synthetic multiline text and image data in disposable Pi state,
-   exits, starts a fresh Pi process, restores through `/stash-pop`, and proves
+   exits, starts a fresh Pi process, restores through `/stash-restore`, and proves
    removal and cleanup. For a separately built candidate, pass its single
    `.tgz` after `--`; see [`docs/maintainer-smoke.md`](docs/maintainer-smoke.md).
 5. README accuracy pass: every documented command/path still behaves as written.

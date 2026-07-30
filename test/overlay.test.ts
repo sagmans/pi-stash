@@ -60,13 +60,13 @@ test("footers mention restore and their mode-specific actions", () => {
 	assert.ok(detailFooter(theme).includes("drop"));
 });
 
-test("detailBody prepends a note when present", () => {
-	const withNote = detailBody(
-		{ entry: entry("a", "body", { message: "ship it" }), index: 0 },
+test("detailBody prepends a label when present", () => {
+	const withLabel = detailBody(
+		{ entry: entry("a", "body", { label: "ship it" }), index: 0 },
 		theme,
 	);
-	assert.ok(withNote[0]?.includes("ship it"));
-	assert.ok(withNote[1]?.includes("body"));
+	assert.ok(withLabel[0]?.includes("ship it"));
+	assert.ok(withLabel[1]?.includes("body"));
 	const noNote = detailBody({ entry: entry("a", "body"), index: 0 }, theme);
 	assert.equal(noNote.length, 1);
 });
@@ -74,7 +74,7 @@ test("detailBody prepends a note when present", () => {
 test("overlay text sanitizes terminal controls without losing draft line structure", () => {
 	const item = {
 		entry: entry("a", "line one\nline \u001b[2Jtwo", {
-			message: "note\u001b]8;;https://evil.invalid\u0007link\u001b]8;;\u0007",
+			label: "note\u001b]8;;https://evil.invalid\u0007link\u001b]8;;\u0007",
 		}),
 		index: 0,
 	};

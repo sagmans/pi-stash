@@ -80,7 +80,7 @@ type LockState =
 
 export type AddEntryInput = {
 	text: string;
-	message?: string;
+	label?: string;
 	assetCount?: number;
 	/** Older asset ids transferred into this entry and safe to remove after commit. */
 	cleanupIds?: readonly string[];
@@ -219,8 +219,8 @@ export class StashStore {
 				text: input.text,
 				createdAt: input.createdAt ?? this.now(),
 			};
-			if (input.message !== undefined && input.message.trim().length > 0) {
-				entry.message = input.message.trim();
+			if (input.label !== undefined && input.label.trim().length > 0) {
+				entry.label = input.label.trim();
 			}
 			if (input.assetCount !== undefined && input.assetCount > 0) {
 				entry.assetCount = input.assetCount;
