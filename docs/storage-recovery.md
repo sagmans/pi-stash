@@ -20,9 +20,9 @@ Symbolic links, foreign-owned paths, and unexpected file types are rejected
 rather than followed. These POSIX guarantees are why native Windows is not
 supported.
 
-Atomic-write temporary files, lock directories, crash-recovery intents, and
-migration markers can briefly appear beside a stash. Do not edit or delete them
-while Pi is running.
+Atomic-write temporary files, lock directories and their reclamation guards,
+crash-recovery intents, and migration markers can briefly appear beside a
+stash. Do not edit or delete them while Pi is running.
 
 ## Persisted image ownership and retention
 
@@ -96,10 +96,12 @@ free space, and path types without replacing links or weakening permissions.
 
 Startup reconciles abandoned add and restore intents: uncommitted staged assets
 are removed, while a restore removed before editor acknowledgement is returned
-to the stash. Provably dead local locks and stale malformed locks are reclaimed. Live,
-foreign-host, or uncertain locks fail closed after a timeout; fresh malformed
-metadata is diagnosed without immediate removal. Close other sessions and retry
-before considering offline recovery.
+to the stash. Assets leased to a restored draft are treated as committed
+ownership and are never removed by intent recovery. Provably dead local locks
+and stale malformed locks are reclaimed, and the same rules reclaim orphaned
+lock-reclamation guards. Live, foreign-host, or uncertain locks fail closed
+after a timeout; fresh malformed metadata is diagnosed without immediate
+removal. Close other sessions and retry before considering offline recovery.
 
 ## Non-destructive recovery checklist
 

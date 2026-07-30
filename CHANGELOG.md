@@ -6,6 +6,16 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Bundle stash operation context into one session target and align storage wording with the domain language.
+
+### Fixed
+
+- Preserve restored-image leases when startup recovery reconciles a stale add intent, and treat a restore recovered by a concurrent session as complete instead of failing startup.
+- Reclaim orphaned lock-reclamation guards so an interrupted reclaim cannot wedge a worktree scope, and stop waiting indefinitely behind a live guard.
+- Load committed schema upgrades despite a failed directory sync, surfacing the durability warning once instead of disabling the scope.
+
 ## [0.1.0] - 2026-07-25
 
 ### Added

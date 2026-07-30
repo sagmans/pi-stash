@@ -1,7 +1,7 @@
 // Disk layout for pi-stash.
 //
-// Stashes are scoped per worktree (the realpath of the current working
-// directory). A worktree, a bare repo checkout, and a plain non-git folder are
+// Stashes are scoped per worktree (the exact current working directory). A
+// worktree, a bare repo checkout, and a plain non-git folder are
 // all just distinct cwd values, so keying on cwd covers every case uniformly
 // without any git discovery. The cwd is flattened into a filename-safe string
 // by escaping segments and joining them with "--" (e.g. "/Users/me/repo" ->
