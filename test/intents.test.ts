@@ -100,6 +100,70 @@ test("reconcileMutationIntents preserves assets after an add commit", async () =
 	assert.equal(existsSync(intent.filePath), false);
 });
 
+test("reconcileMutationIntents preserves leased assets after a committed add was restored", async () => {
+	const paths = pathsFor("/leased-add");
+	const store = await loadStashStore(paths);
+	const intent = await beginAddIntent(paths, ENTRY_ID, DEAD_OWNER);
+	const assetDir = writeAsset(paths);
+	await store.add({ id: ENTRY_ID, text: "committed", assetCount: 1 });
+	await store.pop(ENTRY_ID);
+	assert.deepEqual(store.restoredAssetLeaseIds, [ENTRY_ID]);
+
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
+
+	assert.equal(didRecoverRestore, false);
+	assert.equal(existsSync(assetDir), true, "leased assets must survive add-intent recovery");
+	assert.equal(existsSync(intent.filePath), false);
+	assert.deepEqual(store.restoredAssetLeaseIds, [ENTRY_ID]);
+});
+
+test("reconcileMutationIntents still clears dropped-entry assets queued for cleanup", async () => {
+	const paths = pathsFor("/dropped-add");
+	const store = await loadStashStore(paths);
+	const intent = await beginAddIntent(paths, ENTRY_ID, DEAD_OWNER);
+	const assetDir = writeAsset(paths);
+	await store.add({ id: ENTRY_ID, text: "committed", assetCount: 1 });
+	await store.drop(ENTRY_ID);
+
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
+
+	assert.equal(didRecoverRestore, false);
+	assert.equal(existsSync(assetDir), false);
+	assert.deepEqual(store.pendingAssetCleanupIds, [ENTRY_ID]);
+	assert.equal(existsSync(intent.filePath), false);
+});
+
+test("reconcileMutationIntents tolerates a concurrent reconciler winning the restore", async () => {
+	const paths = pathsFor("/concurrent-restore");
+	const seed = await loadStashStore(paths);
+	const entry = restoredEntry();
+	await seed.add({ ...entry });
+	const intent = await beginRestoreIntent(paths, entry, DEAD_OWNER);
+	await seed.pop(entry.id);
+
+	const store = await loadStashStore(paths);
+	const rival = await loadStashStore(paths);
+	const originalAdd = store.add.bind(store);
+	let interleaved = false;
+	store.add = async (input) => {
+		if (!interleaved && input.id === entry.id) {
+			interleaved = true;
+			await rival.add(input);
+		}
+		return originalAdd(input);
+	};
+
+	const didRecoverRestore = await reconcileMutationIntents(paths, store);
+
+	assert.equal(interleaved, true, "test must interleave the rival commit");
+	assert.equal(didRecoverRestore, false);
+	assert.deepEqual(
+		store.entries.map(({ id }) => id),
+		[entry.id],
+	);
+	assert.equal(existsSync(intent.filePath), false);
+});
+
 test("reconcileMutationIntents rolls back an interrupted restore", async () => {
 	const paths = pathsFor("/interrupted-restore");
 	const store = await loadStashStore(paths);

@@ -16,7 +16,7 @@ import {
 	syncPrivateDirectory,
 	writePrivateFileExclusive,
 } from "./private-fs.ts";
-import { readProcessGeneration, type StashStore } from "./store.ts";
+import { DuplicateStashEntryError, readProcessGeneration, type StashStore } from "./store.ts";
 import { createNewId, isRecord, isSafeEntryId, normalizeEntry, type StashEntry } from "./types.ts";
 
 const INTENT_SCHEMA_VERSION = 1;
@@ -124,7 +124,13 @@ export async function reconcileMutationIntents(
 		const intent = await readIntent(path.join(root, entry.name));
 		if (await ownerMayBeLive(intent.data.owner)) continue;
 		if (intent.data.kind === "add") {
-			if (!store.entries.some((stashEntry) => stashEntry.id === intent.data.id)) {
+			// A committed id owns its assets: an active entry holds them, and a
+			// restored entry's lease keeps them alive while the editor references
+			// them. Only truly uncommitted staging may be removed.
+			const ownsAssets =
+				store.entries.some((stashEntry) => stashEntry.id === intent.data.id) ||
+				store.restoredAssetLeaseIds.includes(intent.data.id);
+			if (!ownsAssets) {
 				await remove(paths.assetDir(intent.data.id));
 			}
 			await completeIntent(intent);
@@ -132,14 +138,20 @@ export async function reconcileMutationIntents(
 		}
 		if (!store.entries.some((stashEntry) => stashEntry.id === intent.data.id)) {
 			const restore = intent.data.entry;
-			await store.add({
-				id: restore.id,
-				text: restore.text,
-				createdAt: restore.createdAt,
-				message: restore.message,
-				assetCount: restore.assetCount,
-			});
-			didRecoverRestore = true;
+			try {
+				await store.add({
+					id: restore.id,
+					text: restore.text,
+					createdAt: restore.createdAt,
+					message: restore.message,
+					assetCount: restore.assetCount,
+				});
+				didRecoverRestore = true;
+			} catch (error) {
+				// A concurrent reconciler may win the same restore; the entry is then
+				// present and recovery is complete, so the duplicate is not a failure.
+				if (!(error instanceof DuplicateStashEntryError)) throw error;
+			}
 		}
 		await completeIntent(intent);
 	}

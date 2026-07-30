@@ -595,6 +595,26 @@ test("schema v1 migration is idempotent after commit", async () => {
 	assert.equal(readFileSync(paths.stashFile, "utf8"), firstMigration);
 });
 
+test("loads a committed schema v1 upgrade when the directory sync fails", async () => {
+	const paths = resolveStashPaths("/legacy-sync-failure", baseDir);
+	writeLegacyStash(paths, {
+		entries: [{ id: LEGACY_ENTRY_ID, text: "preserved", createdAt: 1 }],
+	});
+
+	const loaded = await loadStashStore(paths, clock, async (filePath, file) => {
+		await writeStashFile(filePath, file);
+		return { committed: true, cleanupError: new Error("sync failed") };
+	});
+
+	assert.equal(loaded.entries[0]?.text, "preserved");
+	assert.equal(
+		JSON.parse(readFileSync(paths.stashFile, "utf8")).schemaVersion,
+		STASH_SCHEMA_VERSION,
+	);
+	assert.match(loaded.takeDurabilityWarning() ?? "", /sync failed/u);
+	assert.equal(loaded.takeDurabilityWarning(), undefined, "warning must be one-shot");
+});
+
 test("rejects schema v1 state with duplicate entry identifiers", async () => {
 	const paths = resolveStashPaths("/legacy-duplicates", baseDir);
 	writeLegacyStash(paths, {
@@ -882,6 +902,50 @@ test("reclaims an abandoned stale lock-reclamation guard", async () => {
 	await store.add({ text: "recovered" });
 
 	assert.equal(store.entries[0]?.text, "recovered");
+});
+
+test("reclaims a stale orphaned reclamation guard when the lock dir is gone", async () => {
+	const paths = resolveStashPaths("/orphaned-reclaim", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const reclaimPath = `${paths.stashFile}.lock.reclaim`;
+	mkdirSync(reclaimPath);
+	const staleTime = new Date(Date.now() - STALE_LOCK_AGE_MS);
+	utimesSync(reclaimPath, staleTime, staleTime);
+
+	await store.add({ text: "recovered" });
+
+	assert.equal(store.entries[0]?.text, "recovered");
+	assert.equal(existsSync(reclaimPath), false);
+});
+
+test("reclaims an orphaned reclamation guard whose dead owner left no lock", async () => {
+	const paths = resolveStashPaths("/orphaned-reclaim-dead", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const reclaimPath = `${paths.stashFile}.lock.reclaim`;
+	mkdirSync(reclaimPath);
+	writeFileSync(
+		path.join(reclaimPath, "owner.json"),
+		JSON.stringify({
+			pid: DEAD_PROCESS_ID,
+			host: hostname(),
+			token: TEST_LOCK_TOKEN,
+			generation: "dead-generation",
+			createdAt: new Date().toISOString(),
+		}),
+	);
+
+	await store.add({ text: "recovered" });
+
+	assert.equal(store.entries[0]?.text, "recovered");
+	assert.equal(existsSync(reclaimPath), false);
+});
+
+test("refuses a fresh malformed orphaned reclamation guard instead of hanging", async () => {
+	const paths = resolveStashPaths("/orphaned-reclaim-fresh", baseDir);
+	const store = await loadStashStore(paths, clock);
+	mkdirSync(`${paths.stashFile}.lock.reclaim`);
+
+	await assert.rejects(() => store.add({ text: "x" }), /timed out/u);
 });
 
 test("stash file is written with tight 0o600 permissions", async () => {

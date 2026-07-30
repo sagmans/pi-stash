@@ -4,8 +4,8 @@
 // index-0-is-tip convention. Every mutation re-reads the file inside an
 // exclusive mkdir lock so two pi processes in the same worktree cannot lose
 // updates via a read-modify-write race. Writes are atomic (temp + rename) with
-// tight 0o600/0o700 permissions because stashed prompts may contain sensitive
-// drafts. A corrupt file is quarantined rather than blindly overwritten, so a
+// tight 0o600/0o700 permissions because stashed drafts may contain sensitive
+// text. A corrupt file is quarantined rather than blindly overwritten, so a
 // hand-edit mistake never silently destroys saved stashes.
 
 import { execFile } from "node:child_process";
@@ -92,7 +92,7 @@ export type AddEntryInput = {
 };
 
 export type LoadResult =
-	| { kind: "ready"; file: StashFile; migratedFrom?: number }
+	| { kind: "ready"; file: StashFile; migratedFrom?: number; durabilityWarning?: string }
 	| { kind: "corrupt"; quarantinedTo?: string }
 	| { kind: "unsupported"; schemaVersion: number };
 
@@ -135,9 +135,18 @@ export class UnsupportedStashSchemaError extends Error {
 	}
 }
 
+/** Typed so concurrent reconcilers can recognize a benign duplicate recovery. */
+export class DuplicateStashEntryError extends Error {
+	constructor() {
+		super(DUPLICATE_STASH_ID_MESSAGE);
+		this.name = "DuplicateStashEntryError";
+	}
+}
+
 export class StashStore {
 	private file: StashFile;
 	private corruptRecoveryPath: string | undefined;
+	private durabilityWarning: string | undefined;
 	private readonly stashFile: string;
 	private readonly paths: StashPaths;
 	private readonly now: Clock;
@@ -158,6 +167,7 @@ export class StashStore {
 		this.file =
 			loaded.kind === "ready" ? loaded.file : createEmptyStashFile(paths.sanitized, now());
 		this.corruptRecoveryPath = loaded.kind === "corrupt" ? loaded.quarantinedTo : undefined;
+		this.durabilityWarning = loaded.kind === "ready" ? loaded.durabilityWarning : undefined;
 		this.stashFile = paths.stashFile;
 	}
 
@@ -181,6 +191,13 @@ export class StashStore {
 		const recoveryPath = this.corruptRecoveryPath;
 		this.corruptRecoveryPath = undefined;
 		return recoveryPath;
+	}
+
+	/** One-shot warning from a committed write whose directory sync failed. */
+	takeDurabilityWarning(): string | undefined {
+		const warning = this.durabilityWarning;
+		this.durabilityWarning = undefined;
+		return warning;
 	}
 
 	async refresh(): Promise<void> {
@@ -326,6 +343,9 @@ export class StashStore {
 		);
 		if (loaded.kind === "ready") {
 			this.file = loaded.file;
+			if (loaded.durabilityWarning !== undefined) {
+				this.durabilityWarning = loaded.durabilityWarning;
+			}
 		} else if (loaded.kind === "unsupported") {
 			throw new UnsupportedStashSchemaError(loaded.schemaVersion);
 		} else {
@@ -343,7 +363,7 @@ function assertAvailableOwnership(
 	cleanupIds: readonly string[],
 ): void {
 	if (file.entries.some((entry) => entry.id === entryId)) {
-		throw new Error(DUPLICATE_STASH_ID_MESSAGE);
+		throw new DuplicateStashEntryError();
 	}
 	if (file.pendingAssetCleanup.includes(entryId)) {
 		throw new Error(PENDING_STASH_ID_MESSAGE);
@@ -400,8 +420,17 @@ async function readCurrentStashFile(
 ): Promise<LoadResult> {
 	const loaded = await readStashFile(filePath, cwdKey, now);
 	if (loaded.kind !== "ready" || loaded.migratedFrom === undefined) return loaded;
+	// The upgrade already committed when only the directory sync fails: reporting
+	// it as an error would falsely disable pi-stash over readable data. Preserve
+	// the durability signal as a one-shot warning instead of failing the load.
 	const outcome = await write(filePath, loaded.file);
-	if (outcome?.committed) throw outcome.cleanupError;
+	if (outcome?.committed) {
+		const durabilityWarning =
+			outcome.cleanupError instanceof Error
+				? outcome.cleanupError.message
+				: String(outcome.cleanupError);
+		return { kind: "ready", file: loaded.file, durabilityWarning };
+	}
 	return { kind: "ready", file: loaded.file };
 }
 
@@ -527,10 +556,22 @@ async function acquireStashLock(lockPath: string): Promise<LockOwner> {
 		try {
 			await mkdir(lockPath, { mode: PRIVATE_DIR_MODE });
 			try {
-				if (await pathExists(`${lockPath}${LOCK_RECLAIM_SUFFIX}`)) {
-					await rm(lockPath, { force: true, recursive: true });
-					await delay(LOCK_RETRY_MS);
-					continue;
+				const reclaimPath = `${lockPath}${LOCK_RECLAIM_SUFFIX}`;
+				if (await pathExists(reclaimPath)) {
+					if (await isRecoverableLock(reclaimPath)) {
+						// A reclaimer crashed after removing the old lock but before
+						// releasing its guard. The lock dir is already ours, so clearing
+						// the provably dead guard cannot disturb live reclaim work;
+						// without this the orphaned guard would wedge acquisition forever.
+						await removePrivateDirectory(reclaimPath, "stash lock reclamation guard");
+					} else {
+						await rm(lockPath, { force: true, recursive: true });
+						if (Date.now() - startedAt >= LOCK_TIMEOUT_MS) {
+							throw new Error(lockTimeoutMessage(reclaimPath, await inspectLockState(reclaimPath)));
+						}
+						await delay(LOCK_RETRY_MS);
+						continue;
+					}
 				}
 				await ensurePrivateDirectory(lockPath, "stash lock");
 				return await writeLockOwner(lockPath);
