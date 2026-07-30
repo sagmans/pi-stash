@@ -5,7 +5,12 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type Component, getKeybindings, type Keybinding } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	getKeybindings,
+	type Keybinding,
+	type KeybindingsManager,
+} from "@earendil-works/pi-tui";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const DEFAULT_CONFIG_DIR = ".pi";
@@ -20,10 +25,33 @@ export type Theme = {
 	bold(text: string): string;
 };
 
+export type StashKeybindings = Pick<KeybindingsManager, "getKeys" | "matches">;
+
+export type StashOverlayTui = {
+	requestRender(): void;
+};
+
+export type StashWidgetFactory = (
+	tui: unknown,
+	theme: Pick<Theme, "fg">,
+) => { render(width: number): string[]; invalidate(): void };
+
 export type PiUi = {
 	notify(message: string, type?: "info" | "warning" | "error"): void;
+	confirm(title: string, message: string, options?: { signal?: AbortSignal }): Promise<boolean>;
 	getEditorText(): string;
 	setEditorText(text: string): void;
+	setWidget(key: string, content: string[] | StashWidgetFactory | undefined): void;
+	theme: Pick<Theme, "fg" | "bold">;
+	custom<T>(
+		factory: (
+			tui: StashOverlayTui,
+			theme: unknown,
+			keybindings: StashKeybindings,
+			done: (value: T | undefined) => void,
+		) => unknown,
+		options?: { overlay?: boolean; overlayOptions?: unknown },
+	): Promise<T | undefined>;
 };
 
 export type PiSessionContext = {
@@ -84,8 +112,11 @@ export function formatKeyText(key: string, platform: NodeJS.Platform = process.p
 		.join("/");
 }
 
-export function keyText(keybinding: Keybinding): string {
-	return getKeybindings()
+export function keyText(
+	keybinding: Keybinding,
+	keybindings: StashKeybindings = getKeybindings(),
+): string {
+	return keybindings
 		.getKeys(keybinding)
 		.map((key) => formatKeyText(key))
 		.join("/");
@@ -100,7 +131,7 @@ export class StashBorder implements Component {
 	}
 
 	render(width: number): string[] {
-		return [this.color("─".repeat(Math.max(1, width)))];
+		return [this.color("─".repeat(Math.max(0, width)))];
 	}
 
 	invalidate(): void {

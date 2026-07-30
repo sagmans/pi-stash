@@ -8,6 +8,7 @@ import { link, lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { withStashFileLock } from "./lock.ts";
 import { resolveStashPaths, type StashPaths } from "./paths.ts";
 import {
 	assertPrivateDirectory,
@@ -23,7 +24,6 @@ import {
 	syncPrivateDirectory,
 	writePrivateFileExclusive,
 } from "./private-fs.ts";
-import { withStashFileLock } from "./store.ts";
 import { isRecord, isSafeEntryId, parseStashFile, type StashFile } from "./types.ts";
 
 const LEGACY_AGENT_SUBDIRECTORY = ".pi/agent/pi-stash";

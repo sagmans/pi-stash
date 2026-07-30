@@ -26,9 +26,9 @@ test("formatKeyText preserves Pi's platform-specific key-label convention", () =
 	assert.equal(formatKeyText("alt+x/ctrl+y", "linux"), "alt+x/ctrl+y");
 });
 
-test("StashBorder fills at least one terminal column", () => {
+test("StashBorder never exceeds the available terminal width", () => {
 	const border = new StashBorder((text) => `[${text}]`);
 
-	assert.deepEqual(border.render(0), ["[─]"]);
+	assert.deepEqual(border.render(0), ["[]"]);
 	assert.deepEqual(border.render(3), ["[───]"]);
 });

@@ -16,7 +16,8 @@ import {
 	syncPrivateDirectory,
 	writePrivateFileExclusive,
 } from "./private-fs.ts";
-import { DuplicateStashEntryError, readProcessGeneration, type StashStore } from "./store.ts";
+import { inspectProcessOwner, readProcessGeneration } from "./process-owner.ts";
+import { DuplicateStashEntryError, type StashStore } from "./store.ts";
 import { createNewId, isRecord, isSafeEntryId, normalizeEntry, type StashEntry } from "./types.ts";
 
 const INTENT_SCHEMA_VERSION = 1;
@@ -224,15 +225,7 @@ async function currentOwner(): Promise<MutationIntentOwner> {
 }
 
 async function ownerMayBeLive(owner: MutationIntentOwner): Promise<boolean> {
-	if (owner.host !== hostname()) return true;
-	try {
-		process.kill(owner.pid, 0);
-	} catch (error) {
-		return !hasErrorCode(error, "ESRCH");
-	}
-	const generation = await readProcessGeneration(owner.pid).catch(() => undefined);
-	if (generation && owner.generation) return generation === owner.generation;
-	return true;
+	return (await inspectProcessOwner(owner)) !== "dead";
 }
 
 function intentRoot(paths: StashPaths): string {

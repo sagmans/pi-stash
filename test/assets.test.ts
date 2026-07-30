@@ -20,14 +20,15 @@ import { isImagePath, persistTmpImages } from "../src/assets.ts";
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const JPEG_BYTES = Buffer.from("ffd8ffe0", "hex");
-const GIF_BYTES = Buffer.from("GIF89a", "ascii");
+const GIF87_BYTES = Buffer.from("GIF87a", "ascii");
+const GIF89_BYTES = Buffer.from("GIF89a", "ascii");
 const WEBP_BYTES = Buffer.from("524946460000000057454250", "hex");
 const BMP_BYTES = Buffer.from("BM", "ascii");
 const IMAGE_BYTES = {
 	png: PNG_BYTES,
 	jpg: JPEG_BYTES,
 	jpeg: JPEG_BYTES,
-	gif: GIF_BYTES,
+	gif: GIF89_BYTES,
 	webp: WEBP_BYTES,
 	bmp: BMP_BYTES,
 } as const;
@@ -103,6 +104,25 @@ test("persistTmpImages copies exact bytes and rewrites the path", async () => {
 	assert.ok(result.text.includes(copiedImage));
 	assert.deepEqual(readFileSync(copiedImage), PNG_BYTES);
 	assert.equal(statSync(copiedImage).mode & 0o777, 0o600);
+});
+
+test("persistTmpImages validates and copies every supported image signature", async () => {
+	for (const [extension, bytes] of [
+		["png", PNG_BYTES],
+		["jpg", JPEG_BYTES],
+		["jpeg", JPEG_BYTES],
+		["gif", GIF87_BYTES],
+		["gif", GIF89_BYTES],
+		["webp", WEBP_BYTES],
+		["bmp", BMP_BYTES],
+	] as const) {
+		const image = clipboardImage(extension, bytes);
+		const assetDir = path.join(scratch, "assets", `signature-${imageSequence}`);
+		const result = await persistTmpImages({ text: image, assetDir, tmpDir: tmpRoot });
+
+		assert.equal(result.count, 1, extension);
+		assert.deepEqual(readFileSync(result.text), bytes, extension);
+	}
 });
 
 test("persistTmpImages recognizes supported paths beside prose and punctuation", async () => {
@@ -221,7 +241,7 @@ test("persistTmpImages transfers images from an older owned asset directory", as
 
 	assert.equal(result.count, 1);
 	assert.ok(result.text.includes(path.join(assetDir, "00-00-clip.png")));
-	assert.deepEqual(result.transferredAssetDirs, [oldAssetDir]);
+	assert.deepEqual(result.transferredAssetIds, [path.basename(oldAssetDir)]);
 });
 
 test("persistTmpImages enforces the per-image byte boundary", async () => {

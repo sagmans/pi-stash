@@ -80,8 +80,8 @@ export type PersistResult = {
 	text: string;
 	/** Number of distinct image byte sequences copied into the asset directory. */
 	count: number;
-	/** Older asset directories safe to remove after the new stash commits. */
-	transferredAssetDirs: string[];
+	/** Older asset ids safe to remove after the new stash commits. */
+	transferredAssetIds: string[];
 };
 
 export function isImagePath(candidate: string, tmpDir: string = tmpdir()): boolean {
@@ -100,13 +100,13 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 	const references = findImageReferences(input.text, tmpRoot, input.ownedAssetsRoot);
 	if (references.length === 0) {
 		await removePrivateDirectory(input.assetDir);
-		return { text: input.text, count: 0, transferredAssetDirs: [] };
+		return { text: input.text, count: 0, transferredAssetIds: [] };
 	}
 
 	const loadedBySource = new Map<string, LoadedImage>();
 	const copiesByDigest = new Map<string, PlannedCopy>();
 	const destinationBySource = new Map<string, string>();
-	const transferredAssetDirs = new Set<string>();
+	const transferredAssetIds = new Set<string>();
 	let totalBytes = 0;
 
 	for (const reference of references) {
@@ -137,7 +137,7 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 			reference.ownedAssetDir &&
 			path.resolve(reference.ownedAssetDir) !== path.resolve(input.assetDir)
 		) {
-			transferredAssetDirs.add(reference.ownedAssetDir);
+			transferredAssetIds.add(path.basename(reference.ownedAssetDir));
 		}
 	}
 
@@ -168,7 +168,7 @@ export async function persistTmpImages(input: PersistInput): Promise<PersistResu
 	return {
 		text,
 		count: copiesByDigest.size,
-		transferredAssetDirs: [...transferredAssetDirs],
+		transferredAssetIds: [...transferredAssetIds],
 	};
 }
 

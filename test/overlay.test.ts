@@ -1,14 +1,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
-
+import { CURSOR_MARKER, getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import type { StashKeybindings } from "../src/host.ts";
 import {
-	defaultKeyMatcher,
 	detailBody,
 	detailFooter,
 	detailHeader,
 	headerLine,
-	type KeyMatcher,
 	listFooter,
 	listRow,
 	type OverlayTheme,
@@ -110,13 +108,16 @@ const KEY_GLYPH: Record<string, string> = {
 	"tui.select.cancel": "X",
 	"tui.input.tab": "T",
 };
-const matcher: KeyMatcher = (data, action) => KEY_GLYPH[action] === data;
+const keybindings = {
+	matches: (data: string, action: string) => KEY_GLYPH[action] === data,
+	getKeys: (action: string) => [KEY_GLYPH[action] ?? action],
+} as StashKeybindings;
 
 type Calls = { restore: StashEntry[]; drop: StashEntry[]; close: number; errors: unknown[] };
 function harness(
 	entries: StashEntry[],
 	dropResult: boolean | Promise<boolean> = true,
-	keyMatcher: KeyMatcher = matcher,
+	bindings: StashKeybindings = keybindings,
 	refresh?: () => Promise<readonly StashEntry[]>,
 ) {
 	const calls: Calls = { restore: [], drop: [], close: 0, errors: [] };
@@ -140,7 +141,7 @@ function harness(
 			onRefreshError: (error) => calls.errors.push(error),
 			onClose: () => calls.close++,
 		},
-		keyMatcher,
+		bindings,
 	);
 	return { overlay, calls, renders };
 }
@@ -323,7 +324,7 @@ test("detail scrolling is independent from list selection", () => {
 test("refresh replaces rows while preserving selected identity and preview", async () => {
 	const initial = [entry("first", "first old"), entry("second", "second old")];
 	const refreshed = [entry("new", "new external"), entry("second", "second updated")];
-	const { overlay, calls } = harness(initial, true, matcher, async () => refreshed);
+	const { overlay, calls } = harness(initial, true, keybindings, async () => refreshed);
 	overlay.handleInput("D");
 	overlay.handleInput("T");
 	overlay.handleInput("\u001b[15~");
@@ -343,7 +344,7 @@ test("newest concurrent refresh wins when an older read completes later", async 
 		new Promise<readonly StashEntry[]>((resolve) => {
 			resolvers.push(resolve);
 		});
-	const { overlay } = harness([entry("initial", "initial")], true, matcher, refresh);
+	const { overlay } = harness([entry("initial", "initial")], true, keybindings, refresh);
 	overlay.handleInput("\u001b[15~");
 	overlay.handleInput("\u001b[15~");
 	resolvers[1]?.([entry("newer", "newer snapshot")]);
@@ -358,7 +359,7 @@ test("newest concurrent refresh wins when an older read completes later", async 
 
 test("refresh removal exits a vanished preview and real failures stay visible", async () => {
 	let fail = false;
-	const { overlay, calls } = harness([entry("gone", "gone")], true, matcher, async () => {
+	const { overlay, calls } = harness([entry("gone", "gone")], true, keybindings, async () => {
 		if (fail) throw new Error("lock unavailable");
 		return [];
 	});
@@ -421,15 +422,15 @@ test("every query change resets selection to the first visible result", () => {
 });
 
 test("duplicate labels retain identity under legacy, Kitty, and injected navigation", () => {
-	for (const [down, confirm, keyMatcher] of [
-		["\u001b[B", "\r", defaultKeyMatcher],
-		["\u001b[1;1B", "\u001b[13u", defaultKeyMatcher],
-		["D", "E", matcher],
+	for (const [down, confirm, bindings] of [
+		["\u001b[B", "\r", getKeybindings()],
+		["\u001b[1;1B", "\u001b[13u", getKeybindings()],
+		["D", "E", keybindings],
 	] as const) {
 		const { overlay, calls } = harness(
 			[entry("first", "same label"), entry("second", "same label")],
 			true,
-			keyMatcher,
+			bindings,
 		);
 		overlay.handleInput(down);
 		overlay.handleInput(confirm);

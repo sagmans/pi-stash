@@ -14,9 +14,11 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import install from "../index.ts";
-import type { ExtensionAPI } from "../src/host.ts";
+import type { ExtensionAPI, StashKeybindings } from "../src/host.ts";
+import { installPiStash, isSupportedSession } from "../src/index.ts";
+import { beginAddIntent, beginRestoreIntent, reconcileMutationIntents } from "../src/intents.ts";
 import {
 	doAssetCleanup,
 	doClear,
@@ -24,13 +26,10 @@ import {
 	doRestore,
 	doStash,
 	drainAssetCleanup,
-	installPiStash,
-	isSupportedSession,
 	openOverlay,
 	refreshWidget,
 	type StashUi,
-} from "../src/index.ts";
-import { beginAddIntent, beginRestoreIntent, reconcileMutationIntents } from "../src/intents.ts";
+} from "../src/operations.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
 import { resolveStashPaths } from "../src/paths.ts";
 import { removePrivateDirectory as removeAssetDir } from "../src/private-fs.ts";
@@ -38,6 +37,24 @@ import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/sto
 
 const PNG_BYTES = Buffer.from("89504e470d0a1a0a", "hex");
 const DEAD_PROCESS_ID = 2_147_483_647;
+const CUSTOM_KEY_GLYPHS: Readonly<Record<string, string>> = {
+	"tui.select.down": "J",
+	"tui.select.confirm": "R",
+	"tui.select.cancel": "Q",
+};
+const CUSTOM_KEY_LABELS: Readonly<Record<string, string>> = {
+	"tui.select.up": "k",
+	"tui.select.down": "j",
+	"tui.select.confirm": "r",
+	"tui.select.cancel": "q",
+	"tui.input.tab": "p",
+	"tui.select.pageUp": "u",
+	"tui.select.pageDown": "n",
+};
+const CUSTOM_KEYBINDINGS = {
+	matches: (data: string, action: string) => CUSTOM_KEY_GLYPHS[action] === data,
+	getKeys: (action: string) => [CUSTOM_KEY_LABELS[action] ?? action],
+} as StashKeybindings;
 const STASH_COMMAND_NAMES = [
 	"stash",
 	"stash-list",
@@ -228,11 +245,14 @@ function loadReleaseFailingStore(paths: ReturnType<typeof resolveStashPaths>) {
 	});
 }
 
-function captureOverlay(ui: StashUi): Promise<StashOverlayComponent> {
+function captureOverlay(
+	ui: StashUi,
+	keybindings: StashKeybindings = getKeybindings(),
+): Promise<StashOverlayComponent> {
 	return new Promise((opened) => {
 		ui.custom = (factory) =>
 			new Promise((done) => {
-				const overlay = factory({ requestRender: () => {} }, undefined, undefined, done);
+				const overlay = factory({ requestRender: () => {} }, undefined, keybindings, done);
 				opened(overlay as StashOverlayComponent);
 			});
 	});
@@ -603,7 +623,10 @@ test("doAssetCleanup is repeatable when no restored assets remain", async () => 
 	await doAssetCleanup({ ui, store, paths });
 	await doAssetCleanup({ ui, store, paths });
 
-	assert.equal(ui.notifs.at(-1)?.message, "Asset cleanup: deleted 0, retained 0, failed 0");
+	assert.equal(
+		ui.notifs.at(-1)?.message,
+		"Asset cleanup: removed 0, retained 0, removal failed 0, acknowledgement failed 0",
+	);
 });
 
 test("doDrop removes the entry and its asset dir", async () => {
@@ -637,6 +660,26 @@ test("doDrop keeps a committed removal when lock release fails", async () => {
 	);
 });
 
+test("doDrop continues cleanup after a committed directory-sync failure", async () => {
+	const paths = resolveStashPaths("/drop-sync-failure", baseDir);
+	const seed = await loadStashStore(paths);
+	const entry = await seed.add({ text: "removed", assetCount: 1 });
+	mkdirSync(paths.assetDir(entry.id), { recursive: true });
+	writeFileSync(path.join(paths.assetDir(entry.id), "00-image.png"), "image");
+	const store = await loadStashStore(paths, Date.now, (filePath, file) =>
+		writeStashFile(filePath, file, async () => {
+			throw new Error("sync failed");
+		}),
+	);
+	const ui = fakeUi();
+
+	await doDrop({ ui, store, paths });
+
+	assert.equal(existsSync(paths.assetDir(entry.id)), false);
+	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
+	assert.ok(ui.notifs.some(({ message }) => message.includes("directory sync failed")));
+});
+
 test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	const paths = resolveStashPaths("/drop-cleanup", baseDir);
 	const store = await loadStashStore(paths);
@@ -661,6 +704,33 @@ test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 });
 
+test("asset cleanup waits for stash metadata directory durability before removal", async () => {
+	const paths = resolveStashPaths("/cleanup-directory-sync", baseDir);
+	const store = await loadStashStore(paths);
+	const entry = await store.add({ text: "removed", assetCount: 1 });
+	await store.drop(entry.id);
+	let removed = false;
+
+	await assert.rejects(
+		() =>
+			drainAssetCleanup(
+				{ ui: fakeUi(), store, paths },
+				async () => {
+					removed = true;
+				},
+				"cleanup failed",
+				undefined,
+				async () => {
+					throw new Error("directory sync failed");
+				},
+			),
+		/directory sync failed/u,
+	);
+
+	assert.equal(removed, false);
+	assert.deepEqual(store.pendingAssetCleanupIds, [entry.id]);
+});
+
 test("asset cleanup retries after removal succeeds but acknowledgement fails", async () => {
 	const paths = resolveStashPaths("/cleanup-acknowledgement", baseDir);
 	const seed = await loadStashStore(paths);
@@ -672,13 +742,31 @@ test("asset cleanup retries after removal succeeds but acknowledgement fails", a
 		throw new Error("acknowledgement failed");
 	});
 
-	await drainAssetCleanup({ ui: fakeUi(), store: failing, paths });
+	const report = await drainAssetCleanup({ ui: fakeUi(), store: failing, paths });
 
+	assert.deepEqual(report, { removed: 1, removalFailed: 0, acknowledgementFailed: 1 });
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, [entry.id]);
 	const recovered = await loadStashStore(paths);
 	await drainAssetCleanup({ ui: fakeUi(), store: recovered, paths });
 	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
+});
+
+test("openOverlay uses the injected keybindings for actions and footer hints", async () => {
+	const paths = resolveStashPaths("/custom-overlay-bindings", baseDir);
+	const store = await loadStashStore(paths);
+	await store.add({ text: "first" });
+	await store.add({ text: "second" });
+	const ui = fakeUi();
+	const overlayOpened = captureOverlay(ui, CUSTOM_KEYBINDINGS);
+	const opening = openOverlay({ cwd: "/custom-overlay-bindings", ui, store, paths });
+	const overlay = await overlayOpened;
+	assert.ok(overlay.render(160).some((line) => line.includes("kj move")));
+	overlay.handleInput("J");
+	overlay.handleInput("R");
+	await opening;
+
+	assert.equal(ui.editorText, "first");
 });
 
 test("openOverlay resolves when shutdown aborts an open custom UI", async () => {
@@ -805,6 +893,23 @@ test("doClear cancellation leaves every draft untouched", async () => {
 	assert.equal(store.entryCount, 1);
 });
 
+test("doClear removes restored-only assets after every draft was restored", async () => {
+	const paths = resolveStashPaths("/restored-only-clear", baseDir);
+	const store = await loadStashStore(paths);
+	const entry = await store.add({ text: "restored", assetCount: 1 });
+	mkdirSync(paths.assetDir(entry.id), { recursive: true });
+	writeFileSync(path.join(paths.assetDir(entry.id), "00-image.png"), "image");
+	await store.pop(entry.id);
+	const ui = fakeUi({ confirmResult: true });
+
+	await doClear({ ui, store, paths });
+
+	assert.deepEqual(store.restoredAssetLeaseIds, []);
+	assert.deepEqual(store.pendingAssetCleanupIds, []);
+	assert.equal(existsSync(paths.assetDir(entry.id)), false);
+	assert.ok(ui.notifs.some(({ message }) => message === "Cleared 0 drafts"));
+});
+
 test("doClear respects a confirmed dialog and wipes everything", async () => {
 	const store = await loadStashStore(resolveStashPaths("/repo", baseDir));
 	const paths = resolveStashPaths("/repo", baseDir);
@@ -918,7 +1023,7 @@ test("refreshWidget warns once when a committed schema upgrade cannot sync", asy
 	);
 	const store = await loadStashStore(paths, Date.now, async (filePath, file) => {
 		await writeStashFile(filePath, file);
-		return { committed: true, cleanupError: new Error("sync failed") };
+		return { committed: true, phase: "directory-sync", error: new Error("sync failed") };
 	});
 	const ui = fakeUi();
 
@@ -967,7 +1072,10 @@ test("registered commands execute the documented stash workflows", async () => {
 		await commands.get("stash-drop")?.handler("0", ctx);
 		assert.equal((await loadStashStore(paths)).entryCount, 0);
 		await commands.get("stash-cleanup")?.handler("", ctx);
-		assert.equal(ui.notifs.at(-1)?.message, "Asset cleanup: deleted 0, retained 0, failed 0");
+		assert.equal(
+			ui.notifs.at(-1)?.message,
+			"Asset cleanup: removed 0, retained 0, removal failed 0, acknowledgement failed 0",
+		);
 
 		ui.editorText = "clear through command";
 		await commands.get("stash")?.handler("", ctx);
@@ -1091,6 +1199,33 @@ test("duplicate extension instances perform one prefix mutation", async () => {
 	}
 });
 
+test("session replacement isolates queued work and widgets across worktrees", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
+	const firstUi = fakeUi({ editorText: "first worktree draft" });
+	const firstContext = { cwd: "/first-worktree", mode: "tui", hasUI: true, ui: firstUi };
+	await handlers.get("session_start")?.({}, firstContext);
+
+	const firstStash = commands.get("stash")?.handler("", firstContext);
+	const secondUi = fakeUi({ editorText: "second worktree draft" });
+	const secondContext = { cwd: "/second-worktree", mode: "tui", hasUI: true, ui: secondUi };
+	await handlers.get("session_start")?.({}, secondContext);
+	await firstStash;
+
+	assert.equal(firstUi.widgets.has("pi-stash"), false);
+	await commands.get("stash")?.handler("", secondContext);
+	const stashRoot = path.join(baseDir, "pi-stash");
+	assert.equal(
+		(await loadStashStore(resolveStashPaths(firstContext.cwd, stashRoot))).entryCount,
+		0,
+	);
+	assert.equal(
+		(await loadStashStore(resolveStashPaths(secondContext.cwd, stashRoot))).entries[0]?.text,
+		"second worktree draft",
+	);
+	await handlers.get("session_shutdown")?.({}, secondContext);
+});
+
 test("session shutdown cancels prefix operations that have not started", async () => {
 	const { pi, handlers, events } = extensionHarness();
 	{
@@ -1152,6 +1287,48 @@ test("unsupported schema stays unavailable across startup and every command", as
 		assert.equal((await loadStashStore(legacyPaths)).entries[0]?.text, "legacy stays put");
 		assert.equal(readdirSync(path.dirname(paths.stashFile)).length, 1);
 	}
+});
+
+test("an unsupported session cannot leak the previous scope's unavailable reason", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	const unavailableCwd = "/future-then-unsupported";
+	const paths = resolveStashPaths(unavailableCwd, path.join(baseDir, "pi-stash"));
+	mkdirSync(path.dirname(paths.stashFile), { recursive: true });
+	writeFileSync(
+		paths.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION + 1,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+		}),
+	);
+	installPiStash(pi);
+	const unavailableUi = fakeUi();
+	await handlers.get("session_start")?.(
+		{},
+		{
+			cwd: unavailableCwd,
+			mode: "tui",
+			hasUI: true,
+			ui: unavailableUi,
+		},
+	);
+	assert.ok(unavailableUi.notifs.at(-1)?.message.includes("schema version"));
+
+	const unsupportedUi = fakeUi({ editorText: "untouched" });
+	const unsupportedContext = {
+		cwd: "/rpc-session",
+		mode: "rpc",
+		hasUI: true,
+		ui: unsupportedUi,
+	};
+	await handlers.get("session_start")?.({}, unsupportedContext);
+	await commands.get("stash")?.handler("", unsupportedContext);
+
+	assert.equal(unsupportedUi.editorText, "untouched");
+	assert.equal(unsupportedUi.notifs.at(-1)?.message, "pi-stash is not ready yet");
 });
 
 test("session startup retries durable asset cleanup", async () => {

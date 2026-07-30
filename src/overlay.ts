@@ -13,7 +13,7 @@ import {
 	Text,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { keyText, StashBorder, type Theme } from "./host.ts";
+import { keyText, StashBorder, type StashKeybindings, type Theme } from "./host.ts";
 import { sanitizeTerminalLine, sanitizeTerminalText } from "./terminal.ts";
 import type { StashEntry } from "./types.ts";
 import { entryLabel } from "./widget.ts";
@@ -30,12 +30,6 @@ export type StashOverlayCallbacks = {
 	onRefreshError(error: unknown): void;
 	onClose(): void;
 };
-
-/** Keybinding matcher, injectable so tests avoid global keybinding state. */
-export type KeyMatcher = (data: string, action: string) => boolean;
-
-export const defaultKeyMatcher: KeyMatcher = (data, action) =>
-	getKeybindings().matches(data, action as Keybinding);
 
 const MAX_VISIBLE = 10;
 const LABEL_WIDTH = 50;
@@ -75,25 +69,31 @@ export function headerLine(count: number, cwdLabel: string, theme: OverlayTheme)
 	return ` ${title}  ${tally}  ${where}`;
 }
 
-export function listFooter(theme: OverlayTheme): string {
-	const up = keyText("tui.select.up" as Keybinding);
-	const down = keyText("tui.select.down" as Keybinding);
-	const confirm = keyText("tui.select.confirm" as Keybinding);
-	const preview = keyText("tui.input.tab" as Keybinding);
-	const cancel = keyText("tui.select.cancel" as Keybinding);
+export function listFooter(
+	theme: OverlayTheme,
+	keybindings: StashKeybindings = getKeybindings(),
+): string {
+	const up = keyText("tui.select.up" as Keybinding, keybindings);
+	const down = keyText("tui.select.down" as Keybinding, keybindings);
+	const confirm = keyText("tui.select.confirm" as Keybinding, keybindings);
+	const preview = keyText("tui.input.tab" as Keybinding, keybindings);
+	const cancel = keyText("tui.select.cancel" as Keybinding, keybindings);
 	return theme.fg(
 		"dim",
 		` ${up}${down} move · ${confirm} restore · ${preview} preview · F5 refresh · type to filter · ${cancel} close`,
 	);
 }
 
-export function detailFooter(theme: OverlayTheme): string {
-	const up = keyText("tui.select.up" as Keybinding);
-	const down = keyText("tui.select.down" as Keybinding);
-	const pageUp = keyText("tui.select.pageUp" as Keybinding);
-	const pageDown = keyText("tui.select.pageDown" as Keybinding);
-	const confirm = keyText("tui.select.confirm" as Keybinding);
-	const cancel = keyText("tui.select.cancel" as Keybinding);
+export function detailFooter(
+	theme: OverlayTheme,
+	keybindings: StashKeybindings = getKeybindings(),
+): string {
+	const up = keyText("tui.select.up" as Keybinding, keybindings);
+	const down = keyText("tui.select.down" as Keybinding, keybindings);
+	const pageUp = keyText("tui.select.pageUp" as Keybinding, keybindings);
+	const pageDown = keyText("tui.select.pageDown" as Keybinding, keybindings);
+	const confirm = keyText("tui.select.confirm" as Keybinding, keybindings);
+	const cancel = keyText("tui.select.cancel" as Keybinding, keybindings);
 	return theme.fg(
 		"dim",
 		` d drop · ${confirm} restore · ${up}${down} scroll · ${pageUp}/${pageDown} page · F5 refresh · Home/End bounds · ${cancel}/← back`,
@@ -122,13 +122,15 @@ export function detailBody(item: IndexedEntry, theme: OverlayTheme): string[] {
 class DraftPreviewComponent implements Component {
 	private readonly content: Text;
 	private readonly theme: OverlayTheme;
+	private readonly keybindings: StashKeybindings;
 	private offset = 0;
 	private lineCount = 0;
 	private pinnedToEnd = false;
 
-	constructor(content: string, theme: OverlayTheme) {
+	constructor(content: string, theme: OverlayTheme, keybindings: StashKeybindings) {
 		this.content = new Text(content, 1, 0);
 		this.theme = theme;
+		this.keybindings = keybindings;
 	}
 
 	scroll(lines: number): void {
@@ -163,7 +165,7 @@ class DraftPreviewComponent implements Component {
 		const last = Math.min(this.lineCount, this.offset + PREVIEW_VIEWPORT_ROWS);
 		const position = this.theme.fg("dim", ` lines ${first}–${last}/${this.lineCount}`);
 		return [
-			truncateToWidth(detailFooter(this.theme), width, "…", true),
+			truncateToWidth(detailFooter(this.theme, this.keybindings), width, "…", true),
 			truncateToWidth(position, width, "…", true),
 			...viewport,
 		];
@@ -192,7 +194,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private readonly tui: { requestRender(): void };
 	private readonly theme: OverlayTheme;
 	private readonly cwdLabel: string;
-	private readonly matches: KeyMatcher;
+	private readonly keybindings: StashKeybindings;
 	private readonly callbacks: StashOverlayCallbacks;
 
 	private items: IndexedEntry[];
@@ -226,13 +228,13 @@ export class StashOverlayComponent extends Container implements Focusable {
 		entries: readonly StashEntry[],
 		cwdLabel: string,
 		callbacks: StashOverlayCallbacks,
-		matches: KeyMatcher = defaultKeyMatcher,
+		keybindings: StashKeybindings = getKeybindings(),
 	) {
 		super();
 		this.tui = tui;
 		this.theme = theme;
 		this.cwdLabel = cwdLabel;
-		this.matches = matches;
+		this.keybindings = keybindings;
 		this.callbacks = callbacks;
 		this.items = entries.map((entry, index) => ({ entry, index }));
 		this.filtered = this.items;
@@ -240,7 +242,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		this.headerText = new Text(headerLine(this.items.length, this.cwdLabel, this.theme), 0, 0);
 		this.searchInput = new Input();
 		this.body = new Container();
-		this.footerText = new Text(listFooter(this.theme), 0, 0);
+		this.footerText = new Text(listFooter(this.theme, this.keybindings), 0, 0);
 
 		this.addChild(new StashBorder((text) => this.theme.fg("borderAccent", text)));
 		this.addChild(new Spacer(1));
@@ -328,7 +330,11 @@ export class StashOverlayComponent extends Container implements Focusable {
 	private createDetail(item: IndexedEntry): DetailState {
 		return {
 			item,
-			preview: new DraftPreviewComponent(detailBody(item, this.theme).join("\n"), this.theme),
+			preview: new DraftPreviewComponent(
+				detailBody(item, this.theme).join("\n"),
+				this.theme,
+				this.keybindings,
+			),
 		};
 	}
 
@@ -417,7 +423,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		this.headerText.setText(headerLine(this.items.length, this.cwdLabel, this.theme));
 		this.body.clear();
 		if (!this.detail) {
-			this.footerText.setText(listFooter(this.theme));
+			this.footerText.setText(listFooter(this.theme, this.keybindings));
 			this.renderListBody();
 		} else {
 			// Preview controls live above the scroll viewport so max-height clipping
@@ -456,6 +462,10 @@ export class StashOverlayComponent extends Container implements Focusable {
 			new Text(this.theme.fg("dim", ` id ${detail.item.entry.id.slice(0, 4)}`), 0, 0),
 		);
 		this.body.addChild(detail.preview);
+	}
+
+	private matches(data: string, action: string): boolean {
+		return this.keybindings.matches(data, action as Keybinding);
 	}
 
 	override invalidate(): void {

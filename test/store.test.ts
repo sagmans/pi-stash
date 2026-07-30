@@ -19,10 +19,11 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
+import { CommittedMutationError } from "../src/lock.ts";
 import { resolveStashPaths } from "../src/paths.ts";
+import { readProcessGeneration } from "../src/process-owner.ts";
 import {
 	loadStashStore,
-	readProcessGeneration,
 	STASH_SCHEMA_VERSION,
 	UnsupportedStashSchemaError,
 	writeStashFile,
@@ -282,9 +283,13 @@ test("add reports its committed result when lock release fails", async () => {
 	await assert.rejects(
 		() => store.add({ text: "committed" }),
 		(error: unknown) => {
-			const committed = error as { committed?: boolean; result?: { id?: string } };
-			resultId = committed.result?.id;
-			return committed.committed === true && typeof resultId === "string";
+			if (!(error instanceof CommittedMutationError)) return false;
+			resultId = (error.result as { id?: string }).id;
+			return (
+				typeof resultId === "string" &&
+				error.failures.length === 1 &&
+				error.failures[0]?.phase === "lock-release"
+			);
 		},
 	);
 	removePoisonedLock(paths);
@@ -315,8 +320,11 @@ test("add cannot release a replacement lock generation", async () => {
 	await assert.rejects(
 		() => store.add({ text: "committed under original lock" }),
 		(error: unknown) =>
-			(error as { committed?: boolean }).committed === true &&
-			String((error as { cause?: unknown }).cause).includes("generation changed"),
+			error instanceof CommittedMutationError &&
+			error.failures.some(
+				({ phase, error: failure }) =>
+					phase === "lock-release" && String(failure).includes("generation changed"),
+			),
 	);
 	assert.equal(existsSync(lockPath), true);
 	rmSync(lockPath, { recursive: true, force: true });
@@ -335,12 +343,12 @@ test("add reports a committed result when directory sync fails after rename", as
 	await assert.rejects(
 		() => store.add({ text: "durably uncertain" }),
 		(error: unknown) => {
-			const committed = error as { committed?: boolean; result?: { id?: string } };
-			resultId = committed.result?.id;
+			if (!(error instanceof CommittedMutationError)) return false;
+			resultId = (error.result as { id?: string }).id;
 			return (
-				committed.committed === true &&
 				typeof resultId === "string" &&
-				String(error).includes("committed")
+				error.failures.length === 1 &&
+				error.failures[0]?.phase === "directory-sync"
 			);
 		},
 	);
@@ -438,7 +446,7 @@ test("queueRestoredAssetCleanup retains active leases and queues abandoned lease
 
 	const result = await store.queueRestoredAssetCleanup([retained.id]);
 
-	assert.deepEqual(result, { queued: [abandoned.id], retained: [retained.id] });
+	assert.deepEqual(result, { retained: [retained.id] });
 	assert.deepEqual(store.restoredAssetLeaseIds, [retained.id]);
 	assert.deepEqual(store.pendingAssetCleanupIds, [abandoned.id]);
 });
@@ -603,7 +611,7 @@ test("loads a committed schema v1 upgrade when the directory sync fails", async 
 
 	const loaded = await loadStashStore(paths, clock, async (filePath, file) => {
 		await writeStashFile(filePath, file);
-		return { committed: true, cleanupError: new Error("sync failed") };
+		return { committed: true, phase: "directory-sync", error: new Error("sync failed") };
 	});
 
 	assert.equal(loaded.entries[0]?.text, "preserved");
@@ -809,6 +817,26 @@ test("diagnoses malformed fresh lock metadata without reclaiming it", async () =
 	assert.equal(existsSync(lockPath), true);
 });
 
+test("does not reclaim a lock owned by a foreign host", async () => {
+	const paths = resolveStashPaths("/foreign-host-lock", baseDir);
+	const store = await loadStashStore(paths, clock);
+	const lockPath = `${paths.stashFile}.lock`;
+	mkdirSync(lockPath);
+	writeFileSync(
+		path.join(lockPath, "owner.json"),
+		JSON.stringify({
+			pid: DEAD_PROCESS_ID,
+			host: "foreign-host",
+			token: TEST_LOCK_TOKEN,
+			generation: "foreign-generation",
+			createdAt: new Date().toISOString(),
+		}),
+	);
+
+	await assert.rejects(() => store.add({ text: "blocked" }), /uncertain lock owner/u);
+	assert.equal(existsSync(lockPath), true);
+});
+
 test("does not reclaim a stale-looking lock owned by a live process", async () => {
 	const paths = resolveStashPaths("/live-lock", baseDir);
 	const store = await loadStashStore(paths, clock);
@@ -833,15 +861,13 @@ test("does not reclaim a stale-looking lock owned by a live process", async () =
 test("a live cross-process owner blocks access and its crash is recovered immediately", async (t) => {
 	const paths = resolveStashPaths("/cross-process-lock", baseDir);
 	const store = await loadStashStore(paths, clock);
-	const storeModule = pathToFileURL(path.resolve("src/store.ts")).href;
+	const lockModule = pathToFileURL(path.resolve("src/lock.ts")).href;
 	const child = spawn(
 		process.execPath,
 		[
-			"--disable-warning=ExperimentalWarning",
-			"--experimental-transform-types",
 			"--input-type=module",
 			"--eval",
-			`import { withStashFileLock } from ${JSON.stringify(storeModule)};
+			`import { withStashFileLock } from ${JSON.stringify(lockModule)};
 await withStashFileLock(${JSON.stringify(paths.stashFile)}, async () => {
   process.stdout.write("locked\\n");
   await new Promise((resolve) => setTimeout(resolve, 10_000));

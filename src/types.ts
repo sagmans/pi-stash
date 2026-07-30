@@ -168,13 +168,17 @@ function normalizeOwnedIds(
 ): string[] | undefined {
 	if (!Array.isArray(raw)) return undefined;
 	const cleanupIds: string[] = [];
+	const seen = new Set<string>();
 	for (const id of raw) {
 		if (typeof id !== "string" || !isSafeEntryId(id)) return undefined;
 		if (activeIds.has(id)) {
 			if (discardActiveIds) continue;
 			return undefined;
 		}
-		if (!cleanupIds.includes(id)) cleanupIds.push(id);
+		if (!seen.has(id)) {
+			seen.add(id);
+			cleanupIds.push(id);
+		}
 	}
 	return cleanupIds;
 }
