@@ -82,8 +82,10 @@ export type StashTarget = {
 	paths: StashPaths;
 };
 
-export function isSupportedSession(session: { mode: string; hasUI: boolean }): boolean {
-	return session.mode === "tui" && session.hasUI;
+// pi reports a mode and only "tui" is interactive; omp's extension context
+// omits mode entirely, where hasUI alone distinguishes interactive sessions.
+export function isSupportedSession(session: { mode?: string; hasUI: boolean }): boolean {
+	return (session.mode === undefined || session.mode === "tui") && session.hasUI;
 }
 
 export function refreshWidget(ui: StashUi, store: StashStore): void {

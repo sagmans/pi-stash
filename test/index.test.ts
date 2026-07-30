@@ -173,6 +173,8 @@ test("isSupportedSession activates only interactive TUI sessions", () => {
 	assert.equal(isSupportedSession({ mode: "rpc", hasUI: true }), false);
 	assert.equal(isSupportedSession({ mode: "json", hasUI: false }), false);
 	assert.equal(isSupportedSession({ mode: "tui", hasUI: false }), false);
+	assert.equal(isSupportedSession({ hasUI: true }), true, "omp omits the mode field");
+	assert.equal(isSupportedSession({ hasUI: false }), false);
 });
 
 beforeEach(() => {
@@ -980,6 +982,25 @@ test("command help states selectors, editor prerequisites, and destructive effec
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
 	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);
+});
+
+test("omp-shaped sessions without a mode field execute stash commands", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	install(pi);
+	const ui = fakeUi({ editorText: "omp draft" });
+	// omp's ExtensionContext exposes cwd/hasUI/ui but omits the mode field.
+	const ctx = { cwd: "/omp-contract", hasUI: true, ui };
+	const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	await commands.get("stash")?.handler("omp label", ctx);
+	assert.equal(ui.editorText, "");
+	assert.equal((await loadStashStore(paths)).entries[0]?.label, "omp label");
+
+	await commands.get("stash-restore")?.handler("", ctx);
+	assert.equal(ui.editorText, "omp draft");
+	assert.equal((await loadStashStore(paths)).entryCount, 0);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 
 test("refreshWidget populates with entries and clears when empty", async () => {

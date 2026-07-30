@@ -28,7 +28,8 @@ export type PiUi = {
 
 export type PiSessionContext = {
 	cwd: string;
-	mode: string;
+	/** Present under pi (only "tui" is interactive); omp's context omits it. */
+	mode?: string;
 	hasUI: boolean;
 	ui: PiUi;
 };

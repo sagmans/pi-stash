@@ -80,7 +80,7 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.mode !== "tui" || !ctx.hasUI) return;
+		if ((ctx.mode !== undefined && ctx.mode !== "tui") || !ctx.hasUI) return;
 		const config = smokeConfig();
 		if (!config || !hasPackagedCommands(pi, config.extensionPath)) {
 			ctx.ui.notify(FAILED_MARKER, "error");
