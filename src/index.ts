@@ -82,10 +82,16 @@ export type StashTarget = {
 	paths: StashPaths;
 };
 
-// pi reports a mode and only "tui" is interactive; omp's extension context
-// omits mode entirely, where hasUI alone distinguishes interactive sessions.
-export function isSupportedSession(session: { mode?: string; hasUI: boolean }): boolean {
-	return (session.mode === undefined || session.mode === "tui") && session.hasUI;
+// pi reports a mode and only "tui" is interactive. omp omits mode, but its
+// ACP host also reports hasUI with a stubbed no-op editor, so mode-less
+// sessions require a real terminal before destructive commands are safe.
+export function isSupportedSession(
+	session: { mode?: string; hasUI: boolean },
+	isTerminal: boolean = process.stdout.isTTY,
+): boolean {
+	if (!session.hasUI) return false;
+	if (session.mode !== undefined) return session.mode === "tui";
+	return isTerminal;
 }
 
 export function refreshWidget(ui: StashUi, store: StashStore): void {
@@ -664,6 +670,8 @@ function runPrefixAction(
 
 export type PiStashInstallOptions = {
 	legacyBaseDir?: string;
+	/** Interactive-terminal probe; defaults to process.stdout.isTTY. */
+	isTerminal?: boolean;
 };
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
@@ -689,7 +697,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		const replacing = active;
 		active = undefined;
 		if (replacing) await closeActiveSession(replacing);
-		if (!isSupportedSession(ctx)) return;
+		if (!isSupportedSession(ctx, options.isTerminal)) return;
 
 		startupUnavailableReason = undefined;
 		const baseDir = defaultStashBaseDir();

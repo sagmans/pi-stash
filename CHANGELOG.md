@@ -25,7 +25,7 @@ All notable changes to this project are documented here. This format follows
 - Reduce internal filesystem, lifecycle, overlay, widget, test, and maintainer-tooling surfaces without changing stash behavior.
 - Bundle stash operation context into one session target and align storage wording with the domain language.
 - Rename `/stash-pop` to `/stash-restore` and the stash entry `message` field to `label` to match the domain language; files holding the legacy field still load with their labels intact.
-- Host Oh My Pi's extension context, which omits the session mode reported by pi, and declare the `omp.extensions` manifest beside the legacy pi one.
+- Host Oh My Pi's extension context, which omits the session mode reported by pi, and declare the `omp.extensions` manifest beside the legacy pi one; mode-less sessions activate only on a real terminal so ACP's stubbed UI cannot admit destructive commands.
 
 ### Fixed
 

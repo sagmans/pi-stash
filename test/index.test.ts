@@ -173,8 +173,13 @@ test("isSupportedSession activates only interactive TUI sessions", () => {
 	assert.equal(isSupportedSession({ mode: "rpc", hasUI: true }), false);
 	assert.equal(isSupportedSession({ mode: "json", hasUI: false }), false);
 	assert.equal(isSupportedSession({ mode: "tui", hasUI: false }), false);
-	assert.equal(isSupportedSession({ hasUI: true }), true, "omp omits the mode field");
-	assert.equal(isSupportedSession({ hasUI: false }), false);
+	assert.equal(isSupportedSession({ hasUI: true }, true), true, "omp omits the mode field");
+	assert.equal(isSupportedSession({ hasUI: false }, true), false);
+	assert.equal(
+		isSupportedSession({ hasUI: true }, false),
+		false,
+		"ACP reports hasUI without a real terminal",
+	);
 });
 
 beforeEach(() => {
@@ -986,7 +991,7 @@ test("command help states selectors, editor prerequisites, and destructive effec
 
 test("omp-shaped sessions without a mode field execute stash commands", async () => {
 	const { pi, handlers, commands } = extensionHarness();
-	install(pi);
+	installPiStash(pi, { isTerminal: true });
 	const ui = fakeUi({ editorText: "omp draft" });
 	// omp's ExtensionContext exposes cwd/hasUI/ui but omits the mode field.
 	const ctx = { cwd: "/omp-contract", hasUI: true, ui };
@@ -1001,6 +1006,22 @@ test("omp-shaped sessions without a mode field execute stash commands", async ()
 	assert.equal(ui.editorText, "omp draft");
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+});
+
+test("mode-less sessions without a terminal reject destructive commands", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	installPiStash(pi, { isTerminal: false });
+	const ui = fakeUi({ editorText: "acp draft" });
+	// ACP reports hasUI with a stubbed editor: session_start must not activate.
+	const ctx = { cwd: "/acp-contract", hasUI: true, ui };
+	const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	await commands.get("stash")?.handler("", ctx);
+
+	assert.equal(ui.editorText, "acp draft", "no command may touch the editor");
+	assert.ok(ui.notifs.some(({ message }) => message.includes("not ready")));
+	assert.equal(existsSync(paths.stashFile), false, "no storage may be created");
 });
 
 test("refreshWidget populates with entries and clears when empty", async () => {
