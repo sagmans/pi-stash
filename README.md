@@ -51,7 +51,7 @@ divergent behavior through the bug channel.
 | Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
-| Delete all entries after confirmation | `/stash-clear` | — |
+| Delete all drafts and owned images after confirmation | `/stash-clear` | — |
 
 Index `0` is newest. Selectors accept a displayed index or exact entry ID.
 Restore requires an empty editor and removes the entry. Drop and confirmed clear

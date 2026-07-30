@@ -42,6 +42,9 @@ All notable changes to this project are documented here. This format follows
 - Preserve restored-image leases when startup recovery reconciles a stale add intent, and treat a restore recovered by a concurrent session as complete instead of failing startup.
 - Reclaim orphaned lock-reclamation guards so an interrupted reclaim cannot wedge a worktree scope, and stop waiting indefinitely behind a live guard.
 - Load committed schema upgrades despite a failed directory sync, surfacing the durability warning once instead of disabling the scope.
+- Clear restored-only image leases, distinguish cleanup removal from metadata acknowledgement, and verify copied-image removal in the packaged smoke.
+- Preserve injected keybindings, classify post-commit durability and unlock failures by phase, and avoid treating no-op mutations as committed.
+- Isolate process ownership, lock protocol, stash operations, and session state so recovery and UI behavior have focused ownership.
 
 [Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0

@@ -11,10 +11,14 @@ const README_PATH = path.resolve("README.md");
 const MAINTAINER_GUIDE_PATH = path.resolve("docs/maintainer-development.md");
 const UNRELEASED_HEADING = "## [Unreleased]";
 const SUPPORTED_PI_VERSION = "0.82.1";
-const SUPPORTED_PI_TUI_RANGE = ">=0.82.1 <0.83.0";
+const PI_CORE_PEER_RANGE = "*";
+const ISSUE_TEMPLATE_PATH = path.resolve(".github/ISSUE_TEMPLATE/bug_report.yml");
 
 type PackageManifest = {
 	version: string;
+	files: string[];
+	pi: { extensions: string[] };
+	omp: { extensions: string[] };
 	scripts: { audit: string; test: string };
 	peerDependencies: Record<string, string>;
 	devDependencies: Record<string, string>;
@@ -35,6 +39,7 @@ const tsconfig = JSON.parse(readFileSync(TSCONFIG_PATH, "utf8")) as TypeScriptCo
 const changelog = readFileSync(CHANGELOG_PATH, "utf8");
 const readme = readFileSync(README_PATH, "utf8");
 const maintainerGuide = readFileSync(MAINTAINER_GUIDE_PATH, "utf8");
+const issueTemplate = readFileSync(ISSUE_TEMPLATE_PATH, "utf8");
 
 test("candidate gates warnings and uses native TypeScript stripping", () => {
 	assert.equal(manifest.scripts.audit, "npm audit --audit-level=moderate");
@@ -46,11 +51,21 @@ test("candidate depends only on the Pi TUI surface it imports", () => {
 	assert.equal(manifest.devDependencies["@earendil-works/pi-coding-agent"], undefined);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], undefined);
 	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_VERSION);
-	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_TUI_RANGE);
+	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], PI_CORE_PEER_RANGE);
 	assert.equal(manifest.devDependencies.husky, undefined);
 	assert.match(maintainerGuide, /Keep the user-level `core\.hooksPath` authoritative/u);
 	assert.doesNotMatch(maintainerGuide, /git config .*core\.hooksPath/u);
 	assert.ok(readme.includes(`Pi \`${SUPPORTED_PI_VERSION}\``));
+	assert.match(
+		issueTemplate,
+		new RegExp(`pi: ${SUPPORTED_PI_VERSION.replaceAll(".", "\\.")}`, "u"),
+	);
+});
+
+test("candidate declares identical packaged Pi and Oh My Pi entry points", () => {
+	assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
+	assert.deepEqual(manifest.omp.extensions, manifest.pi.extensions);
+	assert.ok(manifest.files.includes("index.ts"));
 });
 
 test("candidate version is consistent and fully rolled into the changelog", () => {

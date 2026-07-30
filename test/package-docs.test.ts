@@ -32,7 +32,8 @@ test("every published documentation link resolves from its package location", ()
 	const docs = readdirSync("docs", { recursive: true })
 		.filter((entry): entry is string => typeof entry === "string" && entry.endsWith(".md"))
 		.map((entry) => path.join("docs", entry));
-	for (const document of ["README.md", ...rootDocuments, ...docs]) {
+	// README targets are already checked against the package root above.
+	for (const document of [...rootDocuments, ...docs]) {
 		const contents = readFileSync(document, "utf8");
 		for (const match of contents.matchAll(/\[[^\]]+\]\(([^)]+)\)/gu)) {
 			const target = match[1];
