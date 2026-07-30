@@ -13,7 +13,7 @@ import {
 } from "./intents.ts";
 import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
-import { defaultStashBaseDir, resolveStashPaths, scopeLabel } from "./paths.ts";
+import { defaultStashBaseDir, resolveStashPaths, type StashPaths, scopeLabel } from "./paths.ts";
 import { startStashBinding } from "./prefix.ts";
 import { removePrivateDirectory } from "./private-fs.ts";
 import {
@@ -34,6 +34,8 @@ const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before 
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
 const REFRESH_FAILED_MESSAGE = "Failed to refresh stash";
 const CORRUPT_RECOVERY_MESSAGE = "Corrupt stash data was quarantined for recovery";
+const UPGRADE_SYNC_WARNING_MESSAGE =
+	"Stash schema upgrade committed, but the storage directory sync failed";
 const ASSET_CLEANUP_FAILED_MESSAGE = "Draft removed, but failed to remove persisted images";
 const ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE =
 	"Stashed draft, but failed to remove older persisted images";
@@ -73,9 +75,11 @@ export type StashOverlayTui = {
 	requestRender(): void;
 };
 
-export type StashSession = {
-	cwd: string;
+/** Bundle of the session operands every stash operation threads through. */
+export type StashTarget = {
 	ui: StashUi;
+	store: StashStore;
+	paths: StashPaths;
 };
 
 export function isSupportedSession(session: { mode: string; hasUI: boolean }): boolean {
@@ -86,6 +90,10 @@ export function refreshWidget(ui: StashUi, store: StashStore): void {
 	const recoveryPath = store.takeCorruptRecoveryPath();
 	if (recoveryPath) {
 		safeNotify(ui, `${CORRUPT_RECOVERY_MESSAGE}: ${recoveryPath}`, "warning");
+	}
+	const durabilityWarning = store.takeDurabilityWarning();
+	if (durabilityWarning) {
+		safeNotify(ui, `${UPGRADE_SYNC_WARNING_MESSAGE}: ${durabilityWarning}`, "warning");
 	}
 	if (store.entries.length === 0) {
 		ui.setWidget(STASH_WIDGET_KEY, undefined);
@@ -142,13 +150,12 @@ export type AssetCleanupReport = {
 };
 
 export async function drainAssetCleanup(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	remove: AssetDirRemover = removePrivateDirectory,
 	failureMessage = ASSET_CLEANUP_FAILED_MESSAGE,
 	signal?: AbortSignal,
 ): Promise<AssetCleanupReport> {
+	const { ui, store, paths } = target;
 	const report: AssetCleanupReport = { deleted: [], failed: [] };
 	let lockReleaseFailed = false;
 	for (const id of [...store.pendingAssetCleanupIds]) {
@@ -171,12 +178,11 @@ export async function drainAssetCleanup(
 }
 
 export async function doAssetCleanup(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const { ui, store, paths } = target;
 	await refreshVisibleStore(ui, store);
 	if (signal?.aborted) return;
 	const editorText = ui.getEditorText();
@@ -191,14 +197,7 @@ export async function doAssetCleanup(
 		if (!committed) throw error;
 		lifecycle = committed.result;
 	}
-	const report = await drainAssetCleanup(
-		ui,
-		store,
-		paths,
-		remove,
-		ASSET_CLEANUP_FAILED_MESSAGE,
-		signal,
-	);
+	const report = await drainAssetCleanup(target, remove, ASSET_CLEANUP_FAILED_MESSAGE, signal);
 	if (signal?.aborted) return;
 	safeNotify(
 		ui,
@@ -208,13 +207,12 @@ export async function doAssetCleanup(
 }
 
 export async function doStash(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	message?: string,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const { ui, store, paths } = target;
 	if (signal?.aborted) return;
 	const text = ui.getEditorText();
 	if (text.trim().length === 0) {
@@ -274,14 +272,7 @@ export async function doStash(
 	if (signal?.aborted) return;
 	if (ui.getEditorText() === text) ui.setEditorText("");
 	if (!lockReleaseFailed) {
-		await drainAssetCleanup(
-			ui,
-			store,
-			paths,
-			remove,
-			ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE,
-			signal,
-		);
+		await drainAssetCleanup(target, remove, ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE, signal);
 	}
 	if (signal?.aborted) return;
 	refreshWidget(ui, store);
@@ -300,25 +291,24 @@ export async function doStash(
 }
 
 export async function openOverlay(
-	session: StashSession,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget & { cwd: string },
 	signal?: AbortSignal,
 ): Promise<void> {
-	await refreshVisibleStore(session.ui, store);
+	const { cwd, ui, store } = target;
+	await refreshVisibleStore(ui, store);
 	if (signal?.aborted) return;
 	const entries = store.entries;
 	if (entries.length === 0) {
-		safeNotify(session.ui, "No stashed drafts", "info");
+		safeNotify(ui, "No stashed drafts", "info");
 		return;
 	}
 
-	const cwdLabel = scopeLabel(session.cwd, process.env.HOME);
+	const cwdLabel = scopeLabel(cwd, process.env.HOME);
 	let overlay: StashOverlayComponent | undefined;
 	let cancelOverlay: (() => void) | undefined;
-	const chosen = await session.ui.custom<StashEntry | undefined>(
+	const chosen = await ui.custom<StashEntry | undefined>(
 		(tui, _theme, _kb, done) => {
-			overlay = new StashOverlayComponent(tui, session.ui.theme, entries, cwdLabel, {
+			overlay = new StashOverlayComponent(tui, ui.theme, entries, cwdLabel, {
 				onRestore: (entry) => done(entry),
 				onClose: () => done(undefined),
 				onDrop: async (entry) => {
@@ -327,34 +317,27 @@ export async function openOverlay(
 						dropped = await store.drop(entry.id);
 					} catch (error) {
 						if (!signal?.aborted) {
-							safeNotify(session.ui, `${DROP_FAILED_MESSAGE}: ${describeError(error)}`, "error");
+							safeNotify(ui, `${DROP_FAILED_MESSAGE}: ${describeError(error)}`, "error");
 						}
 						return false;
 					}
 					if (signal?.aborted) return false;
 					if (!dropped) {
-						safeNotify(session.ui, "Entry already gone", "warning");
+						safeNotify(ui, "Entry already gone", "warning");
 						return true;
 					}
-					refreshWidget(session.ui, store);
-					await drainAssetCleanup(
-						session.ui,
-						store,
-						paths,
-						undefined,
-						ASSET_CLEANUP_FAILED_MESSAGE,
-						signal,
-					);
-					if (!signal?.aborted) safeNotify(session.ui, `Dropped [${dropped.index}]`, "info");
+					refreshWidget(ui, store);
+					await drainAssetCleanup(target, undefined, ASSET_CLEANUP_FAILED_MESSAGE, signal);
+					if (!signal?.aborted) safeNotify(ui, `Dropped [${dropped.index}]`, "info");
 					return true;
 				},
 				onRefresh: async () => {
-					await refreshVisibleStore(session.ui, store);
+					await refreshVisibleStore(ui, store);
 					return store.entries;
 				},
 				onRefreshError: (error) => {
 					if (!signal?.aborted) {
-						safeNotify(session.ui, `${REFRESH_FAILED_MESSAGE}: ${describeError(error)}`, "error");
+						safeNotify(ui, `${REFRESH_FAILED_MESSAGE}: ${describeError(error)}`, "error");
 					}
 				},
 			});
@@ -368,14 +351,7 @@ export async function openOverlay(
 	signal?.removeEventListener("abort", cancelOverlay ?? (() => {}));
 	await overlay?.settle();
 	if (!chosen || signal?.aborted) return;
-	await restoreEntry(
-		session.ui,
-		store,
-		paths,
-		chosen.id,
-		"Stash entry vanished before restore",
-		signal,
-	);
+	await restoreEntry(target, chosen.id, "Stash entry vanished before restore", signal);
 }
 
 function editorIsReadyForRestore(ui: StashUi): boolean {
@@ -385,13 +361,12 @@ function editorIsReadyForRestore(ui: StashUi): boolean {
 }
 
 async function restoreEntry(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	selector: string | undefined,
 	missingMessage: string,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const { ui, store, paths } = target;
 	if (signal?.aborted) return;
 	let editorBlocked = false;
 	let restoredText: string | undefined;
@@ -452,16 +427,12 @@ async function restoreEntry(
 }
 
 export async function doPop(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	selector?: string,
 	signal?: AbortSignal,
 ): Promise<void> {
 	await restoreEntry(
-		ui,
-		store,
-		paths,
+		target,
 		selector,
 		selector ? `No stash entry matching "${selector}"` : "No stashed drafts",
 		signal,
@@ -469,13 +440,12 @@ export async function doPop(
 }
 
 export async function doDrop(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	selector?: string,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const { ui, store } = target;
 	if (signal?.aborted) return;
 	let resolved: ResolvedEntry | undefined;
 	let lockReleaseFailed = false;
@@ -498,7 +468,7 @@ export async function doDrop(
 	}
 	refreshWidget(ui, store);
 	if (!lockReleaseFailed) {
-		await drainAssetCleanup(ui, store, paths, remove, ASSET_CLEANUP_FAILED_MESSAGE, signal);
+		await drainAssetCleanup(target, remove, ASSET_CLEANUP_FAILED_MESSAGE, signal);
 	}
 	if (signal?.aborted) return;
 	const successMessage = `Dropped [${resolved.index}]`;
@@ -510,12 +480,11 @@ export async function doDrop(
 }
 
 export async function doClear(
-	ui: StashUi,
-	store: StashStore,
-	paths: ReturnType<typeof resolveStashPaths>,
+	target: StashTarget,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
+	const { ui, store } = target;
 	await refreshVisibleStore(ui, store);
 	if (signal?.aborted) return;
 	if (store.entryCount === 0) {
@@ -539,7 +508,7 @@ export async function doClear(
 	if (signal?.aborted) return;
 	refreshWidget(ui, store);
 	if (!lockReleaseFailed) {
-		await drainAssetCleanup(ui, store, paths, remove, ASSET_CLEANUP_FAILED_MESSAGE, signal);
+		await drainAssetCleanup(target, remove, ASSET_CLEANUP_FAILED_MESSAGE, signal);
 	}
 	if (signal?.aborted) return;
 	const successMessage = `Cleared ${ids.length} draft${ids.length === 1 ? "" : "s"}`;
@@ -554,7 +523,7 @@ type ActiveSession = {
 	cwd: string;
 	ui: StashUi;
 	store: StashStore;
-	paths: ReturnType<typeof resolveStashPaths>;
+	paths: StashPaths;
 	stopBinding: () => void;
 	abort: AbortController;
 	pending: Promise<void>;
@@ -625,7 +594,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 			const session = resolve(ctx);
 			if (!session) return;
 			await enqueueOperation(session, (signal) =>
-				doStash(session.ui, session.store, session.paths, parseArg(args), undefined, signal),
+				doStash(session, parseArg(args), undefined, signal),
 			);
 		},
 	});
@@ -634,9 +603,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueueOperation(session, (signal) =>
-				openOverlay({ cwd: session.cwd, ui: session.ui }, session.store, session.paths, signal),
-			);
+			await enqueueOperation(session, (signal) => openOverlay(session, signal));
 		},
 	});
 	pi.registerCommand("stash-pop", {
@@ -644,9 +611,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueueOperation(session, (signal) =>
-				doPop(session.ui, session.store, session.paths, parseArg(args), signal),
-			);
+			await enqueueOperation(session, (signal) => doPop(session, parseArg(args), signal));
 		},
 	});
 	pi.registerCommand("stash-drop", {
@@ -655,7 +620,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 			const session = resolve(ctx);
 			if (!session) return;
 			await enqueueOperation(session, (signal) =>
-				doDrop(session.ui, session.store, session.paths, parseArg(args), undefined, signal),
+				doDrop(session, parseArg(args), undefined, signal),
 			);
 		},
 	});
@@ -664,9 +629,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueueOperation(session, (signal) =>
-				doAssetCleanup(session.ui, session.store, session.paths, undefined, signal),
-			);
+			await enqueueOperation(session, (signal) => doAssetCleanup(session, undefined, signal));
 		},
 	});
 	pi.registerCommand("stash-clear", {
@@ -674,9 +637,7 @@ function registerStashCommands(pi: ExtensionAPI, resolve: ActiveResolver): void 
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueueOperation(session, (signal) =>
-				doClear(session.ui, session.store, session.paths, undefined, signal),
-			);
+			await enqueueOperation(session, (signal) => doClear(session, undefined, signal));
 		},
 	});
 }
@@ -766,7 +727,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			return;
 		}
 		const ui = ctx.ui as StashUi;
-		await drainAssetCleanup(ui, store, paths);
+		await drainAssetCleanup({ ui, store, paths });
 		widgetOpenHints.delete(ui);
 		refreshWidget(ui, store);
 
@@ -778,15 +739,13 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				runPrefixAction(
 					() => active,
 					"stash",
-					(session, signal) =>
-						doStash(session.ui, session.store, session.paths, undefined, undefined, signal),
+					(session, signal) => doStash(session, undefined, undefined, signal),
 				),
 			onList: () =>
 				runPrefixAction(
 					() => active,
 					"open stash list",
-					(session, signal) =>
-						openOverlay({ cwd: session.cwd, ui: session.ui }, session.store, session.paths, signal),
+					(session, signal) => openOverlay(session, signal),
 				),
 			onActive: (prefixKey) => {
 				if (abort.signal.aborted) return;

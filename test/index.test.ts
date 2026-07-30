@@ -236,7 +236,7 @@ test("doStash persists the draft, clears the editor, and shows the widget", asyn
 	const paths = resolveStashPaths("/repo", baseDir);
 	const ui = fakeUi({ editorText: "finish the report" });
 
-	await doStash(ui, store, paths);
+	await doStash({ ui, store, paths });
 
 	assert.equal(store.entryCount, 1);
 	assert.equal(store.entries[0]?.text, "finish the report");
@@ -250,7 +250,7 @@ test("doStash completes committed work when lock release fails", async () => {
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi({ editorText: "committed draft" });
 
-	await doStash(ui, store, paths);
+	await doStash({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	const reopened = await loadStashStore(paths);
@@ -267,7 +267,7 @@ test("doStash preserves text typed while persistence is in progress", async () =
 	const paths = resolveStashPaths("/repo", baseDir);
 	const ui = fakeUi({ editorText: "original draft" });
 
-	const stashing = doStash(ui, store, paths);
+	const stashing = doStash({ ui, store, paths });
 	ui.editorText = "new typing";
 	await stashing;
 
@@ -280,7 +280,7 @@ test("doStash with nothing typed notifies and writes nothing", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const ui = fakeUi({ editorText: "   " });
 
-	await doStash(ui, store, paths);
+	await doStash({ ui, store, paths });
 
 	assert.equal(store.entryCount, 0);
 	assert.ok(ui.notifs.some((n) => n.message === "Nothing to stash"));
@@ -292,7 +292,7 @@ test("doStash persists a tmp image and records the assetCount", async () => {
 	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 
-	await doStash(ui, store, paths);
+	await doStash({ ui, store, paths });
 
 	const entry = store.entries[0];
 	assert.ok(entry);
@@ -319,7 +319,7 @@ test("doStash removes staged assets when the store rejects the entry", async () 
 	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
 
-	await assert.rejects(() => doStash(ui, store, paths), /stash data uses schema version/);
+	await assert.rejects(() => doStash({ ui, store, paths }), /stash data uses schema version/);
 
 	assert.deepEqual(existsSync(paths.assetsRoot) ? readdirSync(paths.assetsRoot) : [], []);
 	assert.equal(ui.editorText, `see ${image}`);
@@ -343,7 +343,7 @@ test("doStash aggregates persistence and staged-asset rollback failures", async 
 
 	await assert.rejects(
 		() =>
-			doStash(ui, store, paths, undefined, async () => {
+			doStash({ ui, store, paths }, undefined, async () => {
 				throw new Error("rollback failed");
 			}),
 		(error: unknown) =>
@@ -359,15 +359,15 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	const store = await loadStashStore(paths);
 	const image = clipboardImage();
 	const ui = fakeUi({ editorText: `see ${image}` });
-	await doStash(ui, store, paths);
+	await doStash({ ui, store, paths });
 	const original = store.entries[0];
 	assert.ok(original);
 	const originalAssetDir = paths.assetDir(original.id);
 
-	await doPop(ui, store, paths);
+	await doPop({ ui, store, paths });
 	assert.deepEqual(store.restoredAssetLeaseIds, [original.id]);
 	let queuedAtRemoval: readonly string[] = [];
-	await doStash(ui, store, paths, undefined, async (assetDir) => {
+	await doStash({ ui, store, paths }, undefined, async (assetDir) => {
 		queuedAtRemoval = [...store.pendingAssetCleanupIds];
 		await removeAssetDir(assetDir);
 	});
@@ -379,7 +379,7 @@ test("restashing a restored image transfers ownership for later drop", async () 
 	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(originalAssetDir), false);
 	assert.equal(existsSync(paths.assetDir(transferred.id)), true);
-	await doDrop(ui, store, paths);
+	await doDrop({ ui, store, paths });
 	assert.equal(existsSync(paths.assetDir(transferred.id)), false);
 });
 
@@ -390,7 +390,7 @@ test("doPop restores the newest draft into the editor and removes it", async () 
 	await store.add({ text: "second" });
 	const ui = fakeUi();
 
-	await doPop(ui, store, paths);
+	await doPop({ ui, store, paths });
 
 	assert.equal(ui.editorText, "second");
 	assert.equal(store.entryCount, 1);
@@ -405,7 +405,7 @@ test("doPop keeps a committed restore when lock release fails", async () => {
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi();
 
-	await doPop(ui, store, paths);
+	await doPop({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	assert.equal(ui.editorText, "restored draft");
@@ -423,7 +423,7 @@ test("doPop defaults to the newest draft added by another store", async () => {
 	await writer.add({ text: "newer" });
 	const ui = fakeUi();
 
-	await doPop(ui, stale, paths);
+	await doPop({ ui, store: stale, paths });
 
 	assert.equal(ui.editorText, "newer");
 	assert.equal(stale.entries[0]?.text, "older");
@@ -435,7 +435,7 @@ test("doPop blocks restore when typing begins while stash removal is waiting", a
 	await store.add({ text: "stashed" });
 	const ui = fakeUi();
 
-	const popping = doPop(ui, store, paths);
+	const popping = doPop({ ui, store, paths });
 	ui.editorText = `${ui.editorText} plus typing`;
 	await popping;
 
@@ -450,7 +450,7 @@ test("doPop preserves a nonempty editor and leaves the stash untouched", async (
 	await store.add({ text: "stashed" });
 	const ui = fakeUi({ editorText: "current draft" });
 
-	await doPop(ui, store, paths);
+	await doPop({ ui, store, paths });
 
 	assert.equal(ui.editorText, "current draft");
 	assert.equal(store.entryCount, 1);
@@ -466,7 +466,7 @@ test("doPop restores the prior editor when durable removal fails", async () => {
 	});
 	const ui = fakeUi();
 
-	await assert.rejects(() => doPop(ui, store, paths), /write failed/);
+	await assert.rejects(() => doPop({ ui, store, paths }), /write failed/);
 
 	assert.equal(ui.editorText, "");
 	assert.equal(store.entryCount, 1);
@@ -493,7 +493,7 @@ test("doPop does not overwrite typing entered while a failed removal is pending"
 	);
 	const ui = fakeUi();
 
-	const popping = doPop(ui, store, paths);
+	const popping = doPop({ ui, store, paths });
 	await writeStarted;
 	ui.editorText = "new typing";
 	rejectWrite?.(new Error("write failed"));
@@ -508,7 +508,7 @@ test("notifications sanitize untrusted selectors before terminal display", async
 	const paths = resolveStashPaths("/safe-notification", baseDir);
 	const ui = fakeUi();
 
-	await doPop(ui, store, paths, "missing\u001b[2J\u202e");
+	await doPop({ ui, store, paths }, "missing\u001b[2J\u202e");
 
 	const notification = ui.notifs.at(-1)?.message ?? "";
 	assert.equal(notification.includes("\u001b"), false);
@@ -521,7 +521,7 @@ test("doPop warns when selector matches nothing", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	const ui = fakeUi();
 
-	await doPop(ui, store, paths, "999");
+	await doPop({ ui, store, paths }, "999");
 
 	assert.ok(ui.notifs.some((n) => n.type === "warning"));
 });
@@ -540,7 +540,7 @@ test("doPop finalizes the restore intent when an abort fires after the durable r
 	});
 	const ui = fakeUi();
 
-	await doPop(ui, store, paths, undefined, controller.signal);
+	await doPop({ ui, store, paths }, undefined, controller.signal);
 
 	// The restore already took effect durably: the editor holds the draft and the
 	// stash no longer lists it.
@@ -567,7 +567,7 @@ test("doAssetCleanup retains editor references and retries failed lease cleanup"
 	await store.pop(abandoned.id);
 	const ui = fakeUi({ editorText: `${paths.assetDir(retained.id)}/00-image.png` });
 
-	await doAssetCleanup(ui, store, paths, async (assetDir) => {
+	await doAssetCleanup({ ui, store, paths }, async (assetDir) => {
 		if (assetDir === paths.assetDir(abandoned.id)) throw new Error("remove failed");
 		await removeAssetDir(assetDir);
 	});
@@ -581,7 +581,7 @@ test("doAssetCleanup retains editor references and retries failed lease cleanup"
 	);
 
 	ui.editorText = "";
-	await doAssetCleanup(ui, store, paths);
+	await doAssetCleanup({ ui, store, paths });
 	assert.deepEqual(store.restoredAssetLeaseIds, []);
 	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(paths.assetDir(retained.id)), false);
@@ -593,8 +593,8 @@ test("doAssetCleanup is repeatable when no restored assets remain", async () => 
 	const store = await loadStashStore(paths);
 	const ui = fakeUi();
 
-	await doAssetCleanup(ui, store, paths);
-	await doAssetCleanup(ui, store, paths);
+	await doAssetCleanup({ ui, store, paths });
+	await doAssetCleanup({ ui, store, paths });
 
 	assert.equal(ui.notifs.at(-1)?.message, "Asset cleanup: deleted 0, retained 0, failed 0");
 });
@@ -606,7 +606,7 @@ test("doDrop removes the entry and its asset dir", async () => {
 	mkdirSync(paths.assetDir(entry.id), { recursive: true });
 	writeFileSync(path.join(paths.assetDir(entry.id), "00-a.png"), "x");
 
-	await doDrop(fakeUi(), store, paths);
+	await doDrop({ ui: fakeUi(), store, paths });
 
 	assert.equal(store.entryCount, 0);
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
@@ -619,7 +619,7 @@ test("doDrop keeps a committed removal when lock release fails", async () => {
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi();
 
-	await doDrop(ui, store, paths);
+	await doDrop({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	const reopened = await loadStashStore(paths);
@@ -639,7 +639,7 @@ test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	const ui = fakeUi();
 	refreshWidget(ui, store);
 
-	await doDrop(ui, store, paths, undefined, async () => {
+	await doDrop({ ui, store, paths }, undefined, async () => {
 		throw new Error("remove failed");
 	});
 
@@ -649,7 +649,7 @@ test("doDrop keeps failed asset cleanup durable and retries it", async () => {
 	assert.equal(ui.widgets.has("pi-stash"), false);
 	assert.ok(ui.notifs.some((notification) => notification.message.includes("failed to remove")));
 
-	await drainAssetCleanup(ui, store, paths, removeAssetDir);
+	await drainAssetCleanup({ ui, store, paths }, removeAssetDir);
 	assert.deepEqual(store.pendingAssetCleanupIds, []);
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 });
@@ -665,12 +665,12 @@ test("asset cleanup retries after removal succeeds but acknowledgement fails", a
 		throw new Error("acknowledgement failed");
 	});
 
-	await drainAssetCleanup(fakeUi(), failing, paths);
+	await drainAssetCleanup({ ui: fakeUi(), store: failing, paths });
 
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
 	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, [entry.id]);
 	const recovered = await loadStashStore(paths);
-	await drainAssetCleanup(fakeUi(), recovered, paths);
+	await drainAssetCleanup({ ui: fakeUi(), store: recovered, paths });
 	assert.deepEqual((await loadStashStore(paths)).pendingAssetCleanupIds, []);
 });
 
@@ -682,7 +682,7 @@ test("openOverlay resolves when shutdown aborts an open custom UI", async () => 
 	const overlayOpened = captureOverlay(ui);
 	const controller = new AbortController();
 
-	const opening = openOverlay({ cwd: "/cancel-overlay", ui }, store, paths, controller.signal);
+	const opening = openOverlay({ cwd: "/cancel-overlay", ui, store, paths }, controller.signal);
 	await overlayOpened;
 	controller.abort();
 	await opening;
@@ -697,7 +697,7 @@ test("open overlay refreshes concurrent additions and reports quarantined corrup
 	const writer = await loadStashStore(paths);
 	const ui = fakeUi();
 	const overlayOpened = captureOverlay(ui);
-	const opening = openOverlay({ cwd: "/concurrent-overlay-refresh", ui }, store, paths);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-refresh", ui, store, paths });
 	const overlay = await overlayOpened;
 
 	await writer.add({ text: "external addition" });
@@ -723,7 +723,7 @@ test("overlay treats an externally removed drop as a benign authoritative refres
 	const writer = await loadStashStore(paths);
 	const ui = fakeUi();
 	const overlayOpened = captureOverlay(ui);
-	const opening = openOverlay({ cwd: "/concurrent-overlay-drop", ui }, store, paths);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-drop", ui, store, paths });
 	const overlay = await overlayOpened;
 
 	await writer.drop(stored.id);
@@ -747,7 +747,7 @@ test("overlay preserves rows and reports real lock and mutation failures", async
 	await store.add({ text: "preserved row" });
 	const ui = fakeUi();
 	const overlayOpened = captureOverlay(ui);
-	const opening = openOverlay({ cwd: "/concurrent-overlay-lock", ui }, store, paths);
+	const opening = openOverlay({ cwd: "/concurrent-overlay-lock", ui, store, paths });
 	const overlay = await overlayOpened;
 	mkdirSync(`${paths.stashFile}.lock`);
 	writeFileSync(path.join(`${paths.stashFile}.lock`, "owner.json"), "placeholder");
@@ -791,7 +791,7 @@ test("doClear cancellation leaves every draft untouched", async () => {
 	};
 	const controller = new AbortController();
 
-	const clearing = doClear(ui, store, paths, undefined, controller.signal);
+	const clearing = doClear({ ui, store, paths }, undefined, controller.signal);
 	controller.abort();
 	await clearing;
 
@@ -805,7 +805,7 @@ test("doClear respects a confirmed dialog and wipes everything", async () => {
 	await store.add({ text: "b" });
 	const ui = fakeUi({ confirmResult: true });
 
-	await doClear(ui, store, paths);
+	await doClear({ ui, store, paths });
 
 	assert.equal(store.entryCount, 0);
 	assert.equal(ui.widgets.has("pi-stash"), false, "widget cleared");
@@ -818,7 +818,7 @@ test("doClear keeps a committed clear when lock release fails", async () => {
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi({ confirmResult: true });
 
-	await doClear(ui, store, paths);
+	await doClear({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	const reopened = await loadStashStore(paths);
@@ -836,7 +836,7 @@ test("doClear sees drafts added by another store after startup", async () => {
 	await writer.add({ text: "added later" });
 	const ui = fakeUi({ confirmResult: true });
 
-	await doClear(ui, stale, paths);
+	await doClear({ ui, store: stale, paths });
 
 	const reopened = await loadStashStore(paths);
 	assert.equal(reopened.entryCount, 0);
@@ -854,7 +854,7 @@ test("doClear reports partial asset cleanup and preserves failed work", async ()
 	}
 	const ui = fakeUi({ confirmResult: true });
 
-	await doClear(ui, store, paths, async (assetDir) => {
+	await doClear({ ui, store, paths }, async (assetDir) => {
 		if (assetDir === paths.assetDir(failed.id)) throw new Error("remove failed");
 		await removeAssetDir(assetDir);
 	});
@@ -876,7 +876,7 @@ test("drainAssetCleanup keeps a committed acknowledgement when lock release fail
 	const store = await loadReleaseFailingStore(paths);
 	const ui = fakeUi();
 
-	await drainAssetCleanup(ui, store, paths);
+	await drainAssetCleanup({ ui, store, paths });
 	removePoisonedLock(paths);
 
 	assert.equal(existsSync(paths.assetDir(entry.id)), false);
@@ -891,9 +891,36 @@ test("doClear is a no-op when the user declines", async () => {
 	const paths = resolveStashPaths("/repo", baseDir);
 	await store.add({ text: "a" });
 
-	await doClear(fakeUi({ confirmResult: false }), store, paths);
+	await doClear({ ui: fakeUi({ confirmResult: false }), store, paths });
 
 	assert.equal(store.entryCount, 1);
+});
+
+test("refreshWidget warns once when a committed schema upgrade cannot sync", async () => {
+	const paths = resolveStashPaths("/upgrade-sync-warning", baseDir);
+	mkdirSync(path.dirname(paths.stashFile), { recursive: true });
+	writeFileSync(
+		paths.stashFile,
+		JSON.stringify({
+			schemaVersion: 1,
+			cwd: paths.sanitized,
+			createdAt: 1,
+			updatedAt: 2,
+			entries: [{ id: "legacy-entry", text: "preserved", createdAt: 1 }],
+		}),
+	);
+	const store = await loadStashStore(paths, Date.now, async (filePath, file) => {
+		await writeStashFile(filePath, file);
+		return { committed: true, cleanupError: new Error("sync failed") };
+	});
+	const ui = fakeUi();
+
+	refreshWidget(ui, store);
+	refreshWidget(ui, store);
+
+	const warnings = ui.notifs.filter(({ message }) => message.includes("directory sync failed"));
+	assert.equal(warnings.length, 1, "durability warning must surface exactly once");
+	assert.match(warnings[0]?.message ?? "", /sync failed/u);
 });
 
 test("registered commands execute the documented stash workflows", async () => {
