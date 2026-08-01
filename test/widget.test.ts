@@ -37,11 +37,10 @@ test("renders header and one line per entry with LIFO index", () => {
 	assert.ok(lines[2]?.includes("oldest"));
 });
 
-test("omits the shortcut hint when no binding is available", () => {
-	const [header] = render([entry()], { openHint: false });
+test("omits the shortcut hint when none is configured", () => {
+	const [header] = render([entry()]);
 
 	assert.equal(header?.includes("to open"), false);
-	assert.equal(header?.includes("(false)"), false);
 	assert.ok(header?.includes("1"));
 });
 
@@ -72,7 +71,7 @@ test("every widget row fits terminal columns at narrow and Unicode boundaries", 
 		entry({ text: "second" }),
 	];
 	for (const width of [0, 1, 2, 5, 12, 20, 40]) {
-		const lines = render(entries, { openHint: "ctrl+x then shift+s to open", width });
+		const lines = render(entries, { openHint: "ctrl+shift+r to open", width });
 		assert.equal(
 			lines.some((line) => visibleWidth(line) > width),
 			false,

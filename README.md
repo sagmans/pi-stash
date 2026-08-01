@@ -14,7 +14,7 @@ private stash storage so restored references survive OS cleanup.
 - Isolate storage by exact working directory, including linked worktrees.
 - Persist recognized temporary clipboard images; ignore other absolute paths.
 - Protect data with private permissions, atomic writes, locking, crash recovery, and corruption quarantine.
-- Support optional `prefix-keybindings`; slash commands always work.
+- Provide native configurable shortcuts without requiring another extension.
 
 ## Install
 
@@ -44,23 +44,46 @@ divergent behavior through the bug channel.
 
 ## Usage
 
-| Action | Command | Optional prefix binding |
+| Action | Command | Default shortcut |
 | --- | --- | --- |
-| Stash draft | `/stash [label]` | `prefix+s` |
-| List drafts | `/stash-list` | `prefix+Shift+S` |
+| Stash supplied command text | `/stash <draft>` | — |
+| Stash current editor draft | — | `Ctrl+Shift+S` |
+| List drafts | `/stash-list` | `Ctrl+Shift+R` |
 | Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
 | Delete all drafts and owned images after confirmation | `/stash-clear` | — |
 
+`/stash <draft>` persists its argument without reading or clearing current
+editor. Bare `/stash` shows usage. Shortcut stash persists current editor and
+clears it only after successful persistence.
+
 Index `0` is newest. Selectors accept a displayed index or exact entry ID.
 Restore requires an empty editor and removes the entry. Drop and confirmed clear
 queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
-other Pi sessions for the same scope first.
+other Pi sessions for same scope first.
 
 The overlay supports configured navigation and confirmation keys, typing to
-filter, preview, `F5` refresh, and `d` to drop. Without compatible
-`prefix-keybindings`, slash commands remain available.
+filter, preview, `F5` refresh, and `d` to drop.
+
+### Shortcut configuration
+
+Override either native shortcut in
+`$PI_CODING_AGENT_DIR/pi-stash/config.json` (normally
+`~/.pi/agent/pi-stash/config.json`):
+
+```json
+{
+  "keybindings": {
+    "stash": "ctrl+shift+s",
+    "list": "ctrl+shift+r"
+  }
+}
+```
+
+Missing file or keys use defaults. Unknown fields, malformed JSON, unsafe files,
+invalid shortcuts, and duplicate physical shortcuts fail extension loading.
+Run `/reload` after changing config.
 
 ## Limits
 

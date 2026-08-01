@@ -5,7 +5,7 @@
 // permission repair and reads bound to the object that was inspected.
 
 import { constants, type Stats } from "node:fs";
-import { link, lstat, mkdir, open, rm, unlink } from "node:fs/promises";
+import { type FileHandle, link, lstat, mkdir, open, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 
 export const PRIVATE_DIR_MODE = 0o700;
@@ -60,6 +60,7 @@ export async function syncPrivateDirectory(
 export async function readPrivateTextFile(
 	filePath: string,
 	label = "stash file",
+	maxBytes?: number,
 ): Promise<PrivateTextFile> {
 	const before = await lstat(filePath);
 	assertRegularOwnedFile(before, label);
@@ -70,12 +71,25 @@ export async function readPrivateTextFile(
 		assertSameIdentity(before, opened, label);
 		await handle.chmod(PRIVATE_FILE_MODE);
 		return {
-			text: await handle.readFile("utf8"),
+			text: await readText(handle, maxBytes, label),
 			identity: identityOf(opened),
 		};
 	} finally {
 		await handle.close();
 	}
+}
+
+async function readText(handle: FileHandle, maxBytes: number | undefined, label: string) {
+	if (maxBytes === undefined) return handle.readFile("utf8");
+	const buffer = Buffer.alloc(maxBytes + 1);
+	let bytesRead = 0;
+	while (bytesRead < buffer.length) {
+		const chunk = await handle.read(buffer, bytesRead, buffer.length - bytesRead, null);
+		if (chunk.bytesRead === 0) break;
+		bytesRead += chunk.bytesRead;
+	}
+	if (bytesRead > maxBytes) throw new Error(`${label} is too large`);
+	return buffer.subarray(0, bytesRead).toString("utf8");
 }
 
 export async function writePrivateFileExclusive(

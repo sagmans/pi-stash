@@ -4,11 +4,7 @@ import path from "node:path";
 
 import type { ExtensionAPI } from "../../src/host.ts";
 
-const QUERY_EVENT = "prefix-keybindings:query";
-const AVAILABLE_EVENT = "prefix-keybindings:available";
-const REGISTER_EVENT = "prefix-keybindings:register";
-const STASH_KEY = "s";
-const PREFIX_LABEL = "smoke";
+const STASH_READY_MARKER = "PI_STASH_SMOKE_STASH_READY";
 const STASHED_MARKER = "PI_STASH_SMOKE_STASHED";
 const RESTORE_READY_MARKER = "PI_STASH_SMOKE_RESTORE_READY";
 const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
@@ -16,12 +12,6 @@ const FAILED_MARKER = "PI_STASH_SMOKE_FAILED";
 const POLL_INTERVAL_MS = 25;
 const STASH_TIMEOUT_MS = 15_000;
 const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-cleanup"] as const;
-
-type Claim = {
-	eventId: string;
-	key: string;
-	requester: string;
-};
 
 type SmokeConfig = {
 	canary: string;
@@ -56,7 +46,6 @@ function hasPackagedCommands(pi: ExtensionAPI, extensionPath: string): boolean {
 }
 
 export default function installSmokeDriver(pi: ExtensionAPI): void {
-	let stashClaim: Claim | undefined;
 	let pollTimer: ReturnType<typeof setTimeout> | undefined;
 	let pollDeadline = 0;
 
@@ -64,21 +53,6 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 		if (pollTimer) clearTimeout(pollTimer);
 		pollTimer = undefined;
 	};
-
-	pi.events.on(QUERY_EVENT, () => {
-		pi.events.emit(AVAILABLE_EVENT, { available: true, prefixKey: PREFIX_LABEL });
-	});
-	pi.events.on(REGISTER_EVENT, (payload) => {
-		if (typeof payload !== "object" || payload === null) return;
-		const claim = payload as Record<string, unknown>;
-		if (
-			claim.key === STASH_KEY &&
-			typeof claim.eventId === "string" &&
-			typeof claim.requester === "string"
-		) {
-			stashClaim = claim as Claim;
-		}
-	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI || (ctx.mode !== undefined ? ctx.mode !== "tui" : !process.stdout.isTTY)) return;
@@ -107,16 +81,8 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 			pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
 			return;
 		}
-		if (!stashClaim) {
-			ctx.ui.notify(FAILED_MARKER, "error");
-			return;
-		}
-
 		ctx.ui.setEditorText(["Synthetic smoke draft", config.canary, config.imagePath].join("\n"));
-		pi.events.emit(stashClaim.eventId, {
-			requester: stashClaim.requester,
-			key: stashClaim.key,
-		});
+		ctx.ui.notify(STASH_READY_MARKER, "info");
 		pollDeadline = Date.now() + STASH_TIMEOUT_MS;
 		const poll = () => {
 			if (ctx.ui.getEditorText().length === 0) {

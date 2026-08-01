@@ -6,6 +6,7 @@ import installSmokeDriver from "../scripts/smoke/driver.ts";
 const EXPECTED_EXTENSION = "/tmp/pi-stash-package/index.ts";
 const IMAGE_PATH = "/tmp/pi-clipboard-00000000-0000-4000-8000-000000000001.png";
 const CANARY = "PI_STASH_SMOKE_DRAFT_7E4A9C2D";
+const STASH_READY_MARKER = "PI_STASH_SMOKE_STASH_READY";
 const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
 
 type Listener = (payload?: unknown) => void;
@@ -72,34 +73,11 @@ function createPi(commandPath = EXPECTED_EXTENSION) {
 	return { events, handlers };
 }
 
-test("smoke driver seeds a synthetic draft through the packaged extension binding", async () => {
+test("smoke driver seeds a synthetic draft for native shortcut dispatch", async () => {
 	await withSmokeEnvironment("stash", async () => {
-		const { events, handlers } = createPi();
-		let available: unknown;
-		events.on("prefix-keybindings:available", (payload) => {
-			available = payload;
-		});
-		events.emit("prefix-keybindings:query");
-		assert.deepEqual(available, { available: true, prefixKey: "smoke" });
-
-		let action: { eventId: string; key: string; requester: string } | undefined;
-		events.on("prefix-keybindings:register", (payload) => {
-			const claim = payload as typeof action;
-			if (claim?.key === "s") action = claim;
-		});
-		events.emit("prefix-keybindings:register", {
-			requester: "package-instance",
-			key: "s",
-			eventId: "package-instance:stash",
-		});
-
+		const { handlers } = createPi();
 		let editor = "";
-		let firedDraft = "";
 		const notifications: string[] = [];
-		events.on("package-instance:stash", () => {
-			firedDraft = editor;
-			editor = "";
-		});
 		await handlers.get("session_start")?.(
 			{},
 			{
@@ -115,10 +93,11 @@ test("smoke driver seeds a synthetic draft through the packaged extension bindin
 			},
 		);
 
-		assert.ok(action);
-		assert.equal(firedDraft, `Synthetic smoke draft\n${CANARY}\n${IMAGE_PATH}`);
+		assert.equal(editor, `Synthetic smoke draft\n${CANARY}\n${IMAGE_PATH}`);
+		assert.deepEqual(notifications, [STASH_READY_MARKER]);
+		editor = "";
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.deepEqual(notifications, ["PI_STASH_SMOKE_STASHED"]);
+		assert.deepEqual(notifications, [STASH_READY_MARKER, "PI_STASH_SMOKE_STASHED"]);
 	});
 });
 

@@ -11,7 +11,7 @@ All notable changes to this project are documented here. This format follows
 ### Added
 
 - Persistent worktree-scoped editor draft stashes with newest-first restore, drop, list, clear, and cleanup commands.
-- Searchable, refreshable, scrollable TUI overlay; terminal-width-aware widget; and optional per-instance `prefix-keybindings` integration.
+- Searchable, refreshable, scrollable TUI overlay; terminal-width-aware widget; and native configurable stash/list shortcuts.
 - Private atomic storage with cross-process locking, corruption quarantine, configured-root and schema migration, and resumable mutation recovery.
 - Bounded clipboard-image persistence with durable restored-image leases and explicit `/stash-cleanup` retry.
 - Full-matrix exact-artifact release gates, SHA-bound waiver validation, and packaged two-launch Herdr smoke coverage.
@@ -21,7 +21,7 @@ All notable changes to this project are documented here. This format follows
 
 - Narrow the published module surface to the Pi installer and include its operational documentation.
 - Depend only on Pi's injected extension contract and the directly imported TUI surface, avoiding a duplicate host SDK and provider stack.
-- Keep slash commands as the reliable fallback when no compatible prefix provider is active.
+- Load native stash/list shortcuts from strict private `pi-stash/config.json`, with `Ctrl+Shift+S` and `Ctrl+Shift+R` defaults.
 - Reduce internal filesystem, lifecycle, overlay, widget, test, and maintainer-tooling surfaces without changing stash behavior.
 - Bundle stash operation context into one session target and align storage wording with the domain language.
 - Rename `/stash-pop` to `/stash-restore` and the stash entry `message` field to `label` to match the domain language; files holding the legacy field still load with their labels intact.
@@ -45,6 +45,7 @@ All notable changes to this project are documented here. This format follows
 - Clear restored-only image leases, distinguish cleanup removal from metadata acknowledgement, and verify copied-image removal in the packaged smoke.
 - Preserve injected keybindings, classify post-commit durability and unlock failures by phase, and avoid treating no-op mutations as committed.
 - Isolate process ownership, lock protocol, stash operations, and session state so recovery and UI behavior have focused ownership.
+- Make `/stash <draft>` persist supplied command text while bare `/stash` reports usage and shortcut stash continues to consume current editor text.
 
 [Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0

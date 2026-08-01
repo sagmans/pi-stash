@@ -82,7 +82,7 @@ export function refreshWidget(ui: PiUi, store: StashStore): void {
 		return;
 	}
 	const entries = store.entries;
-	const openHint = widgetOpenHints.get(ui) ?? false;
+	const openHint = widgetOpenHints.get(ui);
 	ui.setWidget(STASH_WIDGET_KEY, (_tui, theme) => ({
 		render: (width) => themedWidgetLines(entries, theme, { openHint, width }),
 		invalidate: () => {},
@@ -206,13 +206,15 @@ export async function doAssetCleanup(
 
 export async function doStash(
 	target: StashTarget,
-	label?: string,
+	draft?: string,
 	remove: AssetDirRemover = removePrivateDirectory,
 	signal?: AbortSignal,
 ): Promise<void> {
 	const { ui, store, paths } = target;
 	if (signal?.aborted) return;
-	const text = ui.getEditorText();
+	// Only shortcut invocations omit draft and therefore own editor clearing.
+	const readsEditor = draft === undefined;
+	const text = draft ?? ui.getEditorText();
 	if (text.trim().length === 0) {
 		safeNotify(ui, "Nothing to stash", "info");
 		return;
@@ -233,7 +235,6 @@ export async function doStash(
 		await store.add({
 			id,
 			text: staged.text,
-			label,
 			assetCount: staged.count > 0 ? staged.count : undefined,
 			cleanupIds: staged.transferredAssetIds,
 		});
@@ -265,7 +266,7 @@ export async function doStash(
 		intentFinalizeFailed = true;
 	}
 	if (signal?.aborted) return;
-	if (ui.getEditorText() === text) ui.setEditorText("");
+	if (readsEditor && ui.getEditorText() === text) ui.setEditorText("");
 	if (!committedFailure?.hasFailure("lock-release")) {
 		await drainAssetCleanup(target, remove, ASSET_TRANSFER_CLEANUP_FAILED_MESSAGE, signal);
 	}

@@ -10,6 +10,7 @@ import {
 	getKeybindings,
 	type Keybinding,
 	type KeybindingsManager,
+	type KeyId,
 } from "@earendil-works/pi-tui";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
@@ -19,6 +20,72 @@ const TILDE_PREFIX = "~/";
 const FILE_URL_PREFIX = "file://";
 const MAC_ALT_KEY = "alt";
 const MAC_ALT_LABEL = "option";
+const SHORTCUT_MODIFIERS = ["ctrl", "shift", "alt"] as const;
+const SHORTCUT_NAMED_KEYS = new Set([
+	"escape",
+	"esc",
+	"enter",
+	"return",
+	"tab",
+	"space",
+	"backspace",
+	"delete",
+	"insert",
+	"clear",
+	"home",
+	"end",
+	"pageUp",
+	"pageDown",
+	"up",
+	"down",
+	"left",
+	"right",
+]);
+const SHORTCUT_SYMBOL_KEYS = new Set([
+	"`",
+	"-",
+	"=",
+	"[",
+	"]",
+	"\\",
+	";",
+	"'",
+	",",
+	".",
+	"/",
+	"!",
+	"@",
+	"#",
+	"$",
+	"%",
+	"^",
+	"&",
+	"*",
+	"(",
+	")",
+	"_",
+	"+",
+	"|",
+	"~",
+	"{",
+	"}",
+	":",
+	"<",
+	">",
+	"?",
+]);
+const SHORTCUT_FUNCTION_KEY_PATTERN = /^f(?:[1-9]|1[0-2])$/u;
+const SHORTCUT_LETTER_PATTERN = /^[a-z]$/u;
+const SHORTCUT_DIGIT_PATTERN = /^\d$/u;
+const SHORTCUT_KEY_ALIASES: Readonly<Record<string, string>> = {
+	esc: "escape",
+	return: "enter",
+};
+
+export type ParsedShortcut = {
+	key: KeyId;
+	identity: string;
+};
 
 export type Theme = {
 	fg(color: string, text: string): string;
@@ -63,10 +130,6 @@ export type PiSessionContext = {
 };
 
 export type ExtensionAPI = {
-	events: {
-		emit(event: string, payload?: unknown): void;
-		on(event: string, handler: (payload?: unknown) => void): () => void;
-	};
 	on(event: string, handler: (event: unknown, context: PiSessionContext) => unknown): void;
 	registerCommand(
 		name: string,
@@ -75,12 +138,68 @@ export type ExtensionAPI = {
 			handler(args: unknown, context: PiSessionContext): unknown;
 		},
 	): void;
+	registerShortcut(
+		shortcut: KeyId,
+		definition: {
+			description: string;
+			handler(context: PiSessionContext): unknown;
+		},
+	): void;
 	getCommands(): readonly {
 		name: string;
 		source: string;
 		sourceInfo: { path: string };
 	}[];
 };
+
+function splitShortcut(value: string): { modifiers: string[]; key: string } | undefined {
+	if (value === "+") return { modifiers: [], key: value };
+	const hasPlusKey = value.endsWith("++");
+	const prefix = hasPlusKey ? value.slice(0, -2) : value;
+	const parts = prefix.split("+");
+	const key = hasPlusKey ? "+" : parts.pop();
+	if (!key || parts.some((part) => part.length === 0)) return undefined;
+	return { modifiers: parts, key };
+}
+
+function isShortcutKey(value: string): boolean {
+	return (
+		SHORTCUT_LETTER_PATTERN.test(value) ||
+		SHORTCUT_DIGIT_PATTERN.test(value) ||
+		SHORTCUT_NAMED_KEYS.has(value) ||
+		SHORTCUT_SYMBOL_KEYS.has(value) ||
+		SHORTCUT_FUNCTION_KEY_PATTERN.test(value)
+	);
+}
+
+/** Keep config validation aligned with Pi's key grammar and physical-key aliases. */
+export function parseShortcut(value: unknown): ParsedShortcut | undefined {
+	if (typeof value !== "string") return undefined;
+	const key = value.trim();
+	const parts = splitShortcut(key);
+	if (!parts || !isShortcutKey(parts.key)) return undefined;
+	const modifiers = new Set(parts.modifiers);
+	if (
+		modifiers.size !== parts.modifiers.length ||
+		parts.modifiers.some(
+			(modifier) => !SHORTCUT_MODIFIERS.includes(modifier as (typeof SHORTCUT_MODIFIERS)[number]),
+		)
+	) {
+		return undefined;
+	}
+	const canonicalKey = SHORTCUT_KEY_ALIASES[parts.key] ?? parts.key.toLowerCase();
+	if (
+		modifiers.size > 0 &&
+		(canonicalKey === "escape" || SHORTCUT_FUNCTION_KEY_PATTERN.test(canonicalKey))
+	) {
+		return undefined;
+	}
+	const canonicalModifiers = SHORTCUT_MODIFIERS.filter((modifier) => modifiers.has(modifier));
+	return {
+		key: key as KeyId,
+		identity: [...canonicalModifiers, canonicalKey].join("+"),
+	};
+}
 
 /** Resolve the same configurable agent root without importing Pi's full entry point. */
 export function resolveAgentDir(

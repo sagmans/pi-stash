@@ -11,11 +11,9 @@ import type { StashEntry } from "./types.ts";
 
 const MAX_WIDGET_ENTRIES = 5;
 const PREVIEW_WIDTH = 60;
-const DEFAULT_OPEN_HINT = "prefix+shift+s to open";
 
 export type RenderOptions = {
-	/** False suppresses a shortcut hint when no binding provider is active. */
-	openHint?: string | false;
+	openHint?: string;
 	width?: number;
 };
 
@@ -48,8 +46,7 @@ export function themedWidgetLines(
 ): string[] {
 	if (entries.length === 0) return [];
 
-	const configuredHint = options.openHint ?? DEFAULT_OPEN_HINT;
-	const openHint = configuredHint === false ? undefined : sanitizeTerminalLine(configuredHint);
+	const openHint = options.openHint ? sanitizeTerminalLine(options.openHint) : undefined;
 	const details = openHint ? `(${openHint}) · ${entries.length}` : String(entries.length);
 
 	const header = ` ${theme.fg("accent", "Stash")} ${theme.fg("muted", details)}`;

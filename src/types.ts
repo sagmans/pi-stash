@@ -26,7 +26,7 @@ export type StashEntry = {
 	id: string;
 	text: string;
 	createdAt: number;
-	/** Optional user-supplied label from `/stash <label>`. */
+	/** Legacy optional label retained when loading older stash files. */
 	label?: string;
 	/** Count of tmp-dir images persisted into the entry's asset dir. */
 	assetCount?: number;

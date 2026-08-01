@@ -12,8 +12,13 @@ test("Herdr smoke runs two packaged-extension launches without seeded stash stat
 	assert.match(SCRIPT, /scripts\/smoke\/driver\.ts/);
 	assert.match(SCRIPT, /create_pane stash/);
 	assert.match(SCRIPT, /create_pane restore/);
+	assert.match(SCRIPT, /PI_STASH_SMOKE_STASH_READY/);
 	assert.match(SCRIPT, /PI_STASH_SMOKE_STASHED/);
 	assert.match(SCRIPT, /PI_STASH_SMOKE_RESTORE_READY/);
+	assert.match(SCRIPT, /STASH_SHORTCUT="ctrl\+shift\+s"/);
+	assert.match(SCRIPT, /pane send-keys "\$pane_id" "\$STASH_SHORTCUT"/);
+	assert.doesNotMatch(SCRIPT, /config\.json/);
+	assert.doesNotMatch(SCRIPT, /prefix-keybindings/);
 	assert.match(SCRIPT, /PI_STASH_SMOKE_CLEANUP_READY/);
 	assert.match(SCRIPT, /--env "TMPDIR=\$tmp_root"/);
 	assert.match(SCRIPT, /exec env TMPDIR=%q HOME=%q/);

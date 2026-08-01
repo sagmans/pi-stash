@@ -9,7 +9,7 @@ The unsent text currently held by pi's interactive editor.
 _Avoid_: Prompt, message
 
 **Stash entry**:
-One persisted draft, optional user label, creation time, and count of copied temporary images.
+One persisted draft, creation time, count of copied temporary images, and any legacy label retained from older storage.
 _Avoid_: History entry, saved prompt
 
 **Stash**:

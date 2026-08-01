@@ -7,7 +7,7 @@ launches without reading or mutating the user's configured Pi agent directory.
 ## Preconditions
 
 - Run inside a Herdr-managed pane with `HERDR_ENV=1`.
-- Install `herdr`, `pi`, Node.js, npm, `tar`, and the locked project dependencies.
+- Install `herdr`, `pi`, Node.js, `tar`, and locked project dependencies. npm is required only when packing current checkout.
 - The command surface is tested with Herdr `0.7.4`; the script reports the
   installed version and checks required commands before creating anything.
 
@@ -39,8 +39,8 @@ The script:
    public extension entry point alongside a maintainer smoke driver.
 3. Opens a non-focused pane and launches Pi with one-run project trust, update
    checks, and telemetry disabled. The driver verifies `/stash`,
-   `/stash-restore`, and `/stash-cleanup` came from the packaged entry point,
-   then invokes the real stash binding with the synthetic editor draft.
+   `/stash-restore`, and `/stash-cleanup` came from packaged entry point,
+   then Herdr sends default native stash shortcut with synthetic editor draft.
 4. Verifies the editor cleared and durable state owns one copied image, exits
    the first Pi process, and closes its pane.
 5. Starts a fresh pane and Pi process, invokes `/stash-restore`, verifies the full

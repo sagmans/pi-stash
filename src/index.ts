@@ -1,6 +1,7 @@
 // Pi extension session installation for worktree-scoped draft stashes.
 
-import type { ExtensionAPI, PiUi } from "./host.ts";
+import { DEFAULT_STASH_CONFIG, loadStashConfig, type StashConfig } from "./config.ts";
+import { type ExtensionAPI, formatKeyText, type PiUi } from "./host.ts";
 import { reconcileMutationIntents } from "./intents.ts";
 import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import {
@@ -18,9 +19,7 @@ import {
 	showUnavailable,
 } from "./operations.ts";
 import { defaultStashBaseDir, resolveStashPaths, type StashPaths } from "./paths.ts";
-import { startStashBinding } from "./prefix.ts";
 import { loadStashStore, type StashStore, UnsupportedStashSchemaError } from "./store.ts";
-import { createNewId } from "./types.ts";
 
 export type {
 	AssetCleanupReport,
@@ -40,15 +39,14 @@ export {
 	refreshWidget,
 } from "./operations.ts";
 
-const PREFIX_BINDING_NAMESPACE = "@sagmans/pi-stash";
 const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
+const STASH_USAGE_MESSAGE = "Usage: /stash <draft>";
 
 type ActiveSession = {
 	cwd: string;
 	ui: PiUi;
 	store: StashStore;
 	paths: StashPaths;
-	stopBinding: () => void;
 	abort: AbortController;
 	pending: Promise<void>;
 };
@@ -80,8 +78,12 @@ function sessionFromState(state: SessionState): ActiveSession | undefined {
 			: undefined;
 }
 
-function parseArg(args: unknown): string | undefined {
+function parseSelector(args: unknown): string | undefined {
 	return typeof args === "string" && args.trim().length > 0 ? args.trim() : undefined;
+}
+
+function parseDraft(args: unknown): string | undefined {
+	return typeof args === "string" && args.trim().length > 0 ? args : undefined;
 }
 
 function makeRequireActive(getState: () => SessionState): ActiveResolver {
@@ -127,11 +129,16 @@ function registerStashCommands(
 	) => Promise<void>,
 ): void {
 	pi.registerCommand("stash", {
-		description: "Stash draft with optional label; clears editor after persistence",
+		description: "Stash the draft supplied after the command without changing the editor",
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueue(session, (signal) => doStash(session, parseArg(args), undefined, signal));
+			const draft = parseDraft(args);
+			if (draft === undefined) {
+				safeNotify(ctx.ui, STASH_USAGE_MESSAGE, "warning");
+				return;
+			}
+			await enqueue(session, (signal) => doStash(session, draft, undefined, signal));
 		},
 	});
 	pi.registerCommand("stash-list", {
@@ -147,7 +154,7 @@ function registerStashCommands(
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueue(session, (signal) => doRestore(session, parseArg(args), signal));
+			await enqueue(session, (signal) => doRestore(session, parseSelector(args), signal));
 		},
 	});
 	pi.registerCommand("stash-drop", {
@@ -155,7 +162,7 @@ function registerStashCommands(
 		handler: async (args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueue(session, (signal) => doDrop(session, parseArg(args), undefined, signal));
+			await enqueue(session, (signal) => doDrop(session, parseSelector(args), undefined, signal));
 		},
 	});
 	pi.registerCommand("stash-cleanup", {
@@ -176,23 +183,50 @@ function registerStashCommands(
 	});
 }
 
-function bindingOpenHint(prefixKey: string): string {
-	return `${prefixKey} then shift+s to open`;
+function shortcutOpenHint(shortcut: string): string {
+	return `${formatKeyText(shortcut)} to open`;
+}
+
+function registerStashShortcuts(
+	pi: ExtensionAPI,
+	config: StashConfig,
+	resolve: ActiveResolver,
+	enqueue: (
+		active: ActiveSession,
+		operation: (signal: AbortSignal) => Promise<void>,
+	) => Promise<void>,
+): void {
+	pi.registerShortcut(config.keybindings.stash, {
+		description: "Stash the current editor draft",
+		handler: async (ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => doStash(session, undefined, undefined, signal));
+		},
+	});
+	pi.registerShortcut(config.keybindings.list, {
+		description: "Open the stash list",
+		handler: async (ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => openOverlay(session, signal));
+		},
+	});
 }
 
 export type PiStashInstallOptions = {
+	config?: StashConfig;
 	legacyBaseDir?: string;
 	/** Interactive-terminal probe; defaults to process.stdout.isTTY. */
 	isTerminal?: boolean;
 };
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
-	const bindingRequester = `${PREFIX_BINDING_NAMESPACE}:${createNewId()}`;
+	const config = options.config ?? DEFAULT_STASH_CONFIG;
 	let state: SessionState = { kind: "inactive" };
 
 	const closeActiveSession = async (closing: ActiveSession): Promise<void> => {
 		closing.abort.abort();
-		closing.stopBinding();
 		await closing.pending;
 		// Settlement precedes clearing so late work cannot leak across sessions.
 		clearStashWidget(closing.ui);
@@ -206,19 +240,6 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	};
 	const enqueue = (active: ActiveSession, operation: (signal: AbortSignal) => Promise<void>) =>
 		enqueueOperation(active, operation, (reason) => markUnavailable(active, reason));
-	const runPrefixAction = (
-		action: string,
-		operation: (active: ActiveSession, signal: AbortSignal) => Promise<void>,
-	): void => {
-		if (state.kind !== "active") return;
-		const active = state.session;
-		void enqueue(active, (signal) => operation(active, signal)).catch((error) => {
-			if (!active.abort.signal.aborted) {
-				const reason = error instanceof Error ? error.message : "unknown error";
-				safeNotify(active.ui, `pi-stash: ${action} failed: ${reason}`, "error");
-			}
-		});
-	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		const replacing = sessionFromState(state);
@@ -258,35 +279,10 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			return;
 		}
 		await drainAssetCleanup({ ui: ctx.ui, store, paths });
-		setWidgetOpenHint(ctx.ui);
+		setWidgetOpenHint(ctx.ui, shortcutOpenHint(config.keybindings.list));
 		refreshWidget(ctx.ui, store);
 
 		const abort = new AbortController();
-		const stopBinding = startStashBinding({
-			events: pi.events,
-			requester: bindingRequester,
-			onStash: () =>
-				runPrefixAction("stash", (session, signal) =>
-					doStash(session, undefined, undefined, signal),
-				),
-			onList: () =>
-				runPrefixAction("open stash list", (session, signal) => openOverlay(session, signal)),
-			onActive: (prefixKey) => {
-				if (abort.signal.aborted) return;
-				setWidgetOpenHint(ctx.ui, bindingOpenHint(prefixKey));
-				refreshWidget(ctx.ui, store);
-			},
-			onInert: () => {
-				if (abort.signal.aborted) return;
-				setWidgetOpenHint(ctx.ui);
-				refreshWidget(ctx.ui, store);
-				safeNotify(
-					ctx.ui,
-					"pi-stash: prefix-keybindings not detected; use /stash and /stash-list",
-					"warning",
-				);
-			},
-		});
 
 		state = {
 			kind: "active",
@@ -295,7 +291,6 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				ui: ctx.ui,
 				store,
 				paths,
-				stopBinding,
 				abort,
 				pending: Promise.resolve(),
 			},
@@ -309,8 +304,9 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	});
 
 	registerStashCommands(pi, requireActiveForCommand, enqueue);
+	registerStashShortcuts(pi, config, requireActiveForCommand, enqueue);
 }
 
-export default function install(pi: ExtensionAPI): void {
-	installPiStash(pi);
+export default async function install(pi: ExtensionAPI): Promise<void> {
+	installPiStash(pi, { config: await loadStashConfig() });
 }

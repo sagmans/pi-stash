@@ -8,6 +8,7 @@ readonly PANE_RATIO="0.5"
 readonly PROCESS_EXIT_GRACE_SECONDS="1"
 readonly PRIVATE_DIR_MODE="700"
 readonly PRIVATE_FILE_MODE="600"
+readonly STASH_SHORTCUT="ctrl+shift+s"
 readonly SMOKE_CANARY="PI_STASH_SMOKE_DRAFT_7E4A9C2D"
 
 package_input="${1:-}"
@@ -48,7 +49,7 @@ require_command_surface() {
 	local pane_help wait_help
 	pane_help="$(herdr pane 2>&1 || true)"
 	wait_help="$(herdr wait 2>&1 || true)"
-	for command in "pane split" "pane run" "pane read" "pane close"; do
+	for command in "pane split" "pane run" "pane send-keys" "pane read" "pane close"; do
 		[[ "$pane_help" == *"$command"* ]] || fail "Herdr lacks required '$command' command"
 	done
 	[[ "$wait_help" == *"wait output"* ]] || fail "Herdr lacks required 'wait output' command"
@@ -151,8 +152,11 @@ chmod "$PRIVATE_FILE_MODE" "$clipboard_image"
 pi_version="$($pi_bin --version)"
 
 create_pane stash
+herdr wait output "$pane_id" --match "PI_STASH_SMOKE_STASH_READY" --source recent-unwrapped \
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not ready"
+herdr pane send-keys "$pane_id" "$STASH_SHORTCUT" >/dev/null
 herdr wait output "$pane_id" --match "PI_STASH_SMOKE_STASHED" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not stashed"
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "default native shortcut did not stash draft"
 assert_clean_output
 stash_file="$(node -e '
 const { existsSync, lstatSync, readFileSync, readdirSync } = require("node:fs");
