@@ -24,7 +24,7 @@ body:
       placeholder: |
         OS: macOS 15.5
         Node.js: 22.19.0
-        pi: 0.82.1
+        pi: 0.83.0
         Terminal: Terminal.app
     validations:
       required: true
