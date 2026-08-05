@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly TESTED_HERDR_VERSION="0.7.4"
+readonly TESTED_HERDR_VERSION="0.8.0"
 readonly READY_TIMEOUT_MS="30000"
 readonly ACTION_TIMEOUT_MS="30000"
 readonly PANE_RATIO="0.5"
@@ -46,13 +46,11 @@ fail() {
 }
 
 require_command_surface() {
-	local pane_help wait_help
+	local pane_help
 	pane_help="$(herdr pane 2>&1 || true)"
-	wait_help="$(herdr wait 2>&1 || true)"
-	for command in "pane split" "pane run" "pane send-keys" "pane read" "pane close"; do
+	for command in "pane split" "pane run" "pane send-keys" "pane read" "pane close" "pane wait-output"; do
 		[[ "$pane_help" == *"$command"* ]] || fail "Herdr lacks required '$command' command"
 	done
-	[[ "$wait_help" == *"wait output"* ]] || fail "Herdr lacks required 'wait output' command"
 }
 
 parse_pane_id() {
@@ -93,14 +91,14 @@ create_pane() {
 	)"
 	pane_id="$(printf '%s' "$split_json" | parse_pane_id)" || fail "unable to parse created pane ID"
 	[[ -n "$pane_id" ]] || fail "Herdr did not return a pane ID"
-	herdr wait output "$pane_id" --match "$(basename -- "$repo_root")" --source recent-unwrapped \
+	herdr pane wait-output "$pane_id" --match "$(basename -- "$repo_root")" --source recent-unwrapped \
 		--timeout "$READY_TIMEOUT_MS" >/dev/null || fail "created shell did not become ready"
 
 	printf -v launch_command 'exec env TMPDIR=%q HOME=%q PI_CODING_AGENT_DIR=%q PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 PI_STASH_SMOKE_PHASE=%q PI_STASH_SMOKE_EXTENSION=%q PI_STASH_SMOKE_IMAGE=%q PI_STASH_SMOKE_CANARY=%q %q --approve --no-session -e %q -e %q' \
 		"$tmp_root" "$smoke_home" "$agent_dir" "$phase" "$extension_path" "$clipboard_image" "$SMOKE_CANARY" \
 		"$pi_bin" "$extension_path" "$driver_path"
 	herdr pane run "$pane_id" "$launch_command" >/dev/null
-	herdr wait output "$pane_id" --match "pi v$pi_version" --source recent-unwrapped \
+	herdr pane wait-output "$pane_id" --match "pi v$pi_version" --source recent-unwrapped \
 		--timeout "$READY_TIMEOUT_MS" >/dev/null || fail "Pi TUI did not become ready"
 }
 
@@ -152,10 +150,10 @@ chmod "$PRIVATE_FILE_MODE" "$clipboard_image"
 pi_version="$($pi_bin --version)"
 
 create_pane stash
-herdr wait output "$pane_id" --match "PI_STASH_SMOKE_STASH_READY" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASH_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not ready"
 herdr pane send-keys "$pane_id" "$STASH_SHORTCUT" >/dev/null
-herdr wait output "$pane_id" --match "PI_STASH_SMOKE_STASHED" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASHED" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "default native shortcut did not stash draft"
 assert_clean_output
 stash_file="$(node -e '
@@ -177,15 +175,15 @@ process.stdout.write(filePath);
 close_pane || fail "first Pi launch left a live process"
 
 create_pane restore
-herdr wait output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "second Pi launch did not load packaged commands"
 herdr pane run "$pane_id" "/stash-restore" >/dev/null
-herdr wait output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
-herdr wait output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored editor was not cleared for cleanup"
 herdr pane run "$pane_id" "/stash-cleanup" >/dev/null
-herdr wait output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
+herdr pane wait-output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored image cleanup did not complete"
 assert_clean_output
 node -e '
