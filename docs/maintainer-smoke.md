@@ -8,7 +8,7 @@ launches without reading or mutating the user's configured Pi agent directory.
 
 - Run inside a Herdr-managed pane with `HERDR_ENV=1`.
 - Install `herdr`, `pi`, Node.js, `tar`, and locked project dependencies. npm is required only when packing current checkout.
-- The command surface is tested with Herdr `0.7.4`; the script reports the
+- The command surface is tested with Herdr `0.8.0`; the script reports the
   installed version and checks required commands before creating anything.
 
 From the repository root:
@@ -57,7 +57,7 @@ repository path, and disposable paths.
 
 - `HERDR_ENV=1 is required`: run from a Herdr-managed pane.
 - Missing Herdr command: install a compatible Herdr version and compare its
-  reported command surface with tested version `0.7.4`.
+  reported command surface with tested version `0.8.0`.
 - `pi is not available`: install the supported Pi version or add it to `PATH`.
 - Pi readiness/action timeout: inspect locally; never share raw pane capture.
 - Packaged command provenance failure: ensure the `.tgz` is the intended CI
