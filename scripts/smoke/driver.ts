@@ -11,6 +11,9 @@ const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
 const FAILED_MARKER = "PI_STASH_SMOKE_FAILED";
 const POLL_INTERVAL_MS = 25;
 const STASH_TIMEOUT_MS = 15_000;
+// Pi notifications are transient: repeat markers so the Herdr-side watcher
+// cannot miss them between its own poll cycles.
+const MARKER_REPEAT_MS = 250;
 const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-cleanup"] as const;
 
 type SmokeConfig = {
@@ -47,33 +50,55 @@ function hasPackagedCommands(pi: ExtensionAPI, extensionPath: string): boolean {
 
 export default function installSmokeDriver(pi: ExtensionAPI): void {
 	let pollTimer: ReturnType<typeof setTimeout> | undefined;
+	let markerTimer: ReturnType<typeof setTimeout> | undefined;
 	let pollDeadline = 0;
 
 	const stopPolling = () => {
 		if (pollTimer) clearTimeout(pollTimer);
 		pollTimer = undefined;
 	};
+	const stopMarker = () => {
+		if (markerTimer) clearTimeout(markerTimer);
+		markerTimer = undefined;
+	};
+	const emitMarker = (
+		notify: (text: string, level: "info" | "error") => void,
+		marker: string,
+		level: "info" | "error",
+	) => {
+		stopMarker();
+		const deadline = Date.now() + STASH_TIMEOUT_MS;
+		const tick = () => {
+			notify(marker, level);
+			if (Date.now() >= deadline) {
+				markerTimer = undefined;
+				return;
+			}
+			markerTimer = setTimeout(tick, MARKER_REPEAT_MS);
+		};
+		tick();
+	};
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI || (ctx.mode !== undefined ? ctx.mode !== "tui" : !process.stdout.isTTY)) return;
 		const config = smokeConfig();
 		if (!config || !hasPackagedCommands(pi, config.extensionPath)) {
-			ctx.ui.notify(FAILED_MARKER, "error");
+			emitMarker((text, level) => ctx.ui.notify(text, level), FAILED_MARKER, "error");
 			return;
 		}
 		if (config.phase === "restore") {
-			ctx.ui.notify(RESTORE_READY_MARKER, "info");
+			emitMarker((text, level) => ctx.ui.notify(text, level), RESTORE_READY_MARKER, "info");
 			pollDeadline = Date.now() + STASH_TIMEOUT_MS;
 			const poll = () => {
 				if (ctx.ui.getEditorText().includes(config.canary)) {
 					pollTimer = undefined;
 					ctx.ui.setEditorText("");
-					ctx.ui.notify(CLEANUP_READY_MARKER, "info");
+					emitMarker((text, level) => ctx.ui.notify(text, level), CLEANUP_READY_MARKER, "info");
 					return;
 				}
 				if (Date.now() >= pollDeadline) {
 					pollTimer = undefined;
-					ctx.ui.notify(FAILED_MARKER, "error");
+					emitMarker((text, level) => ctx.ui.notify(text, level), FAILED_MARKER, "error");
 					return;
 				}
 				pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
@@ -82,17 +107,17 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 			return;
 		}
 		ctx.ui.setEditorText(["Synthetic smoke draft", config.canary, config.imagePath].join("\n"));
-		ctx.ui.notify(STASH_READY_MARKER, "info");
+		emitMarker((text, level) => ctx.ui.notify(text, level), STASH_READY_MARKER, "info");
 		pollDeadline = Date.now() + STASH_TIMEOUT_MS;
 		const poll = () => {
 			if (ctx.ui.getEditorText().length === 0) {
 				pollTimer = undefined;
-				ctx.ui.notify(STASHED_MARKER, "info");
+				emitMarker((text, level) => ctx.ui.notify(text, level), STASHED_MARKER, "info");
 				return;
 			}
 			if (Date.now() >= pollDeadline) {
 				pollTimer = undefined;
-				ctx.ui.notify(FAILED_MARKER, "error");
+				emitMarker((text, level) => ctx.ui.notify(text, level), FAILED_MARKER, "error");
 				return;
 			}
 			pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
@@ -102,5 +127,6 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		stopPolling();
+		stopMarker();
 	});
 }
