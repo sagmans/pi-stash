@@ -1,0 +1,111 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Verification reads source and artifacts only. Publication re-declares the
+# single extra permission needed for npm OIDC trusted publishing.
+permissions:
+  contents: read
+
+jobs:
+  package:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      # A mismatched tag must fail before an artifact can reach the approval gate.
+      - name: Tag must match package.json version
+        run: |
+          test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+
+      # Build once so every verifier and npm receive identical package bytes.
+      - name: Build publish artifact
+        run: |
+          mkdir -p artifact
+          npm pack --pack-destination artifact
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-package
+          path: artifact/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  verify:
+    needs: package
+    timeout-minutes: 15
+    strategy:
+      # Every leg reports independently; publication still requires aggregate success.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["22.19.0", "24"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npm run verify:ci
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: artifact
+
+      - name: Verify packaged entry point
+        shell: bash
+        run: |
+          set -- artifact/*.tgz
+          test "$#" -eq 1 && test -f "$1"
+          package="$PWD/$1"
+          install_root="$RUNNER_TEMP/pi-stash-package"
+          npm install --ignore-scripts --prefix "$install_root" "$package"
+          node scripts/release/verify-package-entry.mjs "$install_root"
+
+  publish:
+    needs: [package, verify]
+    runs-on: ubuntu-latest
+    # Environment approval makes publication a separate explicit owner decision.
+    environment: npm-release
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Node 24 bundles npm >= 11.5.1, required for trusted publishing.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-package
+          path: artifact
+
+      # Publish only the digest-validated artifact exercised by every matrix leg.
+      - name: Publish verified artifact
+        run: |
+          set -- artifact/*.tgz
+          test "$#" -eq 1 && test -f "$1"
+          package="$1"
+          npm publish "$package" --provenance --access public

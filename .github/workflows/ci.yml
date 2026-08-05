@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this workflow only reads the checked-out source.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the primary development/dogfooding target; Ubuntu covers the
+        # POSIX baseline. Windows is not a supported platform (see README).
+        os: [ubuntu-latest, macos-latest]
+        # 22.19.0 is the declared minimum engine; 24 tracks the current LTS.
+        node: ["22.19.0", "24"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # --ignore-scripts: nothing in this repo needs lifecycle scripts, and
+      # skipping them shrinks the supply-chain surface of CI installs.
+      - run: npm ci --ignore-scripts
+
+      # The named full gate keeps maintainer guidance and CI aligned and fails
+      # on moderate-or-higher dependency findings.
+      - run: npm run verify:ci
