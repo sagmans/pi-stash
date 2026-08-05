@@ -47,6 +47,7 @@ All notable changes to this project are documented here. This format follows
 - Isolate process ownership, lock protocol, stash operations, and session state so recovery and UI behavior have focused ownership.
 - Make `/stash <draft>` persist supplied command text while bare `/stash` reports usage and shortcut stash continues to consume current editor text.
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
+- Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
 [Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0
