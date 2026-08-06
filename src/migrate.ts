@@ -1,7 +1,9 @@
 // One-scope migration from pi-stash's historical fixed home root to Pi's
-// configured agent root. A private marker makes interrupted copies resumable;
-// source data is removed only after normalized state and every owned asset are
-// verified at the destination.
+// configured agent root, covering both historical key formats (the current
+// v2-prefixed key and the vendored predecessor's unprefixed v1 key). A
+// private marker makes interrupted copies resumable; source data is removed
+// only after normalized state and every owned asset are verified at the
+// destination.
 
 import { constants } from "node:fs";
 import { link, lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
@@ -9,7 +11,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { withStashFileLock } from "./lock.ts";
-import { resolveStashPaths, type StashPaths } from "./paths.ts";
+import { resolveLegacyStashPaths, resolveStashPaths, type StashPaths } from "./paths.ts";
 import {
 	assertPrivateDirectory,
 	assertRegularOwnedFile,
@@ -62,14 +64,49 @@ export async function migrateLegacyStash(
 	legacyBaseDir: string = legacyStashBaseDir(),
 	options: MigrationOptions = {},
 ): Promise<boolean> {
-	const source = resolveStashPaths(cwd, legacyBaseDir);
 	const destination = resolveStashPaths(cwd, destinationBaseDir);
-	if (path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir)) return false;
 	const markerPath = `${destination.stashFile}${MIGRATION_SUFFIX}`;
-	if (!(await pathExists(source.stashFile)) && !(await pathExists(markerPath))) return false;
+	const source = await resolveMigrationSource(
+		cwd,
+		legacyBaseDir,
+		destinationBaseDir,
+		destination,
+		markerPath,
+	);
+	if (!source) return false;
 	return withStashFileLock(source.stashFile, () =>
 		withStashFileLock(destination.stashFile, () => migrateLocked(source, destination, options)),
 	);
+}
+
+// Two historical key formats can outlive an upgrade: the current v2-prefixed
+// key and the vendored predecessor's unprefixed v1 key. A same-root upgrade
+// only ever sources the v1 key, because the v2 key resolves to the
+// destination file itself.
+async function resolveMigrationSource(
+	cwd: string,
+	legacyBaseDir: string,
+	destinationBaseDir: string,
+	destination: StashPaths,
+	markerPath: string,
+): Promise<StashPaths | undefined> {
+	const candidates: StashPaths[] = [];
+	if (path.resolve(legacyBaseDir) !== path.resolve(destinationBaseDir)) {
+		candidates.push(resolveStashPaths(cwd, legacyBaseDir));
+	}
+	candidates.push(resolveLegacyStashPaths(cwd, legacyBaseDir));
+	if (!(await pathExists(markerPath))) {
+		for (const candidate of candidates) {
+			if (await pathExists(candidate.stashFile)) return candidate;
+		}
+		return undefined;
+	}
+	// An interrupted migration must resume from the exact source the marker
+	// recorded, or that scope's asset bookkeeping would be abandoned.
+	const marker = await readMarker(markerPath, destination);
+	const pinned = candidates.find((candidate) => candidate.stashFile === marker.sourceStashFile);
+	if (!pinned) throw new Error(`${MALFORMED_MARKER_MESSAGE}: scope mismatch`);
+	return pinned;
 }
 
 async function migrateLocked(
@@ -83,7 +120,7 @@ async function migrateLocked(
 	let sourceFile: StashFile | undefined;
 
 	if (markerExists) {
-		marker = await readMarker(markerPath, source, destination);
+		marker = await readMarker(markerPath, destination);
 		sourceFile = await readLegacyFileIfPresent(source);
 		if (sourceFile) assertMarkerMatchesFile(marker, sourceFile);
 	} else {
@@ -97,6 +134,7 @@ async function migrateLocked(
 		await ensurePrivateDirectory(path.dirname(markerPath));
 		await installPrivateTextFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
 	}
+	if (sourceFile) sourceFile = rekeyedForDestination(sourceFile, destination);
 
 	interruptAfter("marker", options);
 	await copyOwnedAssets(source, destination, marker);
@@ -143,11 +181,7 @@ function assetOwnership(file: StashFile): Pick<MigrationMarker, "assetIds" | "re
 	};
 }
 
-async function readMarker(
-	markerPath: string,
-	source: StashPaths,
-	destination: StashPaths,
-): Promise<MigrationMarker> {
+async function readMarker(markerPath: string, destination: StashPaths): Promise<MigrationMarker> {
 	const text = (await readPrivateTextFile(markerPath, "legacy migration marker")).text;
 	let raw: unknown;
 	try {
@@ -156,14 +190,17 @@ async function readMarker(
 		throw new Error(MALFORMED_MARKER_MESSAGE);
 	}
 	if (!isMigrationMarker(raw)) throw new Error(MALFORMED_MARKER_MESSAGE);
-	if (
-		raw.cwdKey !== destination.sanitized ||
-		raw.sourceStashFile !== source.stashFile ||
-		raw.destinationStashFile !== destination.stashFile
-	) {
+	if (raw.cwdKey !== destination.sanitized || raw.destinationStashFile !== destination.stashFile) {
 		throw new Error(`${MALFORMED_MARKER_MESSAGE}: scope mismatch`);
 	}
 	return raw;
+}
+
+// v1-keyed files embed the flattened cwd in the file itself; the destination
+// must record its own key so later loads can verify file-location coherence.
+function rekeyedForDestination(file: StashFile, destination: StashPaths): StashFile {
+	if (file.cwd === destination.sanitized) return file;
+	return { ...file, cwd: destination.sanitized };
 }
 
 function isMigrationMarker(value: unknown): value is MigrationMarker {

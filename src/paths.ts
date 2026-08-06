@@ -49,6 +49,33 @@ function escapeSegment(segment: string): string {
 		.replaceAll(SEPARATOR, ESCAPED_SEPARATOR);
 }
 
+// The vendored predecessor keyed stashes without a version prefix and without
+// segment escaping. Discovery of those files must reproduce that algorithm
+// exactly — including UTF-16 length limits and backslash-as-separator — or a
+// historical key would resolve to a different filename and stay invisible.
+export function sanitizeLegacyCwd(cwd: string): string {
+	const segments = cwd.split(/[\\/]+/).filter(Boolean);
+	const sanitized = `${SEPARATOR}${segments.join(SEPARATOR)}`;
+	if (sanitized.length <= SANITIZE_MAX_LENGTH) return sanitized;
+	const digest = createHash(HASH_ALGORITHM).update(cwd, "utf8").digest("hex").slice(0, HASH_LENGTH);
+	const prefix = sanitized.slice(0, SANITIZE_MAX_LENGTH - digest.length - SEPARATOR.length);
+	return `${prefix}${SEPARATOR}${digest}`;
+}
+
+export function resolveLegacyStashPaths(cwd: string, baseDir: string): StashPaths {
+	const sanitized = sanitizeLegacyCwd(cwd);
+	const assetsRoot = path.join(baseDir, `${sanitized}-assets`);
+	return {
+		sanitized,
+		stashFile: path.join(baseDir, `${sanitized}.json`),
+		assetsRoot,
+		assetDir: (entryId) => {
+			assertSafeEntryId(entryId);
+			return path.join(assetsRoot, entryId);
+		},
+	};
+}
+
 function truncateToUtf8Bytes(value: string, maxBytes: number): string {
 	let bytes = 0;
 	let result = "";
