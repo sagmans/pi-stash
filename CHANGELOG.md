@@ -6,6 +6,12 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-06
+
+### Fixed
+
+- Discover and migrate historical unprefixed stash keys, including same-root upgrades, so existing drafts remain visible.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
@@ -49,5 +55,6 @@ All notable changes to this project are documented here. This format follows
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sagmans/pi-stash/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0
