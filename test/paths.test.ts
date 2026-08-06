@@ -1,7 +1,14 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { defaultStashBaseDir, resolveStashPaths, sanitizeCwd, scopeLabel } from "../src/paths.ts";
+import {
+	defaultStashBaseDir,
+	resolveLegacyStashPaths,
+	resolveStashPaths,
+	sanitizeCwd,
+	sanitizeLegacyCwd,
+	scopeLabel,
+} from "../src/paths.ts";
 
 const MAX_STORAGE_KEY_BYTES = 200;
 
@@ -49,5 +56,29 @@ test("resolveStashPaths derives stash file and per-entry asset dir", () => {
 	assert.equal(paths.sanitized, "v2--Users--me--repo");
 	assert.equal(paths.stashFile, "/tmp/base/v2--Users--me--repo.json");
 	assert.equal(paths.assetDir("abc"), "/tmp/base/v2--Users--me--repo-assets/abc");
+	assert.throws(() => paths.assetDir("../escape"), /invalid stash entry id/);
+});
+
+test("sanitizeLegacyCwd reproduces the historical unprefixed key byte-for-byte", () => {
+	assert.equal(sanitizeLegacyCwd("/Users/me/repo"), "--Users--me--repo");
+	assert.equal(sanitizeLegacyCwd("/Users/me/repo/"), "--Users--me--repo");
+	// The historical writer treated backslashes as separators and never
+	// escaped segments; discovery must not reinterpret either choice.
+	assert.equal(sanitizeLegacyCwd("C:\\dev\\repo"), "--C:--dev--repo");
+	assert.equal(sanitizeLegacyCwd("/a--b"), "--a--b");
+});
+
+test("sanitizeLegacyCwd limits long keys with the historical hash suffix", () => {
+	const longCwd = `/${"segment-".repeat(40)}`;
+	const sanitized = sanitizeLegacyCwd(longCwd);
+	assert.ok(sanitized.length <= 200);
+	assert.ok(sanitized.startsWith("--segment"));
+	assert.notEqual(sanitized, sanitizeLegacyCwd(`${longCwd}-x`));
+});
+
+test("resolveLegacyStashPaths derives the historical stash file and asset root", () => {
+	const paths = resolveLegacyStashPaths("/Users/me/repo", "/tmp/base");
+	assert.equal(paths.stashFile, "/tmp/base/--Users--me--repo.json");
+	assert.equal(paths.assetDir("abc"), "/tmp/base/--Users--me--repo-assets/abc");
 	assert.throws(() => paths.assetDir("../escape"), /invalid stash entry id/);
 });

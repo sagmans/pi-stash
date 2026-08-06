@@ -13,7 +13,7 @@ import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
 import { migrateLegacyStash } from "../src/migrate.ts";
-import { resolveStashPaths } from "../src/paths.ts";
+import { resolveLegacyStashPaths, resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 import type { StashEntry, StashFile } from "../src/types.ts";
 
@@ -262,4 +262,129 @@ test("migrateLegacyStash invokes syncSourceParent after source removal and resum
 	assert.equal((await loadStashStore(destination)).entries[0]?.text, "synced source parent");
 	assert.equal(existsSync(legacy.stashFile), false);
 	assert.equal(existsSync(markerPath), false);
+});
+
+type LegacyV1Entry = {
+	id: string;
+	text: string;
+	createdAt: number;
+	message?: string;
+	assetCount?: number;
+};
+
+function writeLegacyV1(
+	entries: LegacyV1Entry[] = [],
+	cwdKey?: string,
+): ReturnType<typeof resolveLegacyStashPaths> {
+	const paths = resolveLegacyStashPaths(CWD, legacyBase);
+	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
+	const file = {
+		schemaVersion: 1,
+		cwd: cwdKey ?? paths.sanitized,
+		createdAt: CREATED_AT,
+		updatedAt: CREATED_AT,
+		entries,
+	};
+	writeFileSync(paths.stashFile, JSON.stringify(file), { mode: 0o600 });
+	return paths;
+}
+
+test("migrateLegacyStash migrates an unprefixed v1-key stash across roots", async () => {
+	const entry: LegacyV1Entry = {
+		id: ACTIVE_ID,
+		text: "vendored draft",
+		createdAt: CREATED_AT,
+		message: "vendored label",
+		assetCount: 1,
+	};
+	const legacy = writeLegacyV1([entry]);
+	writeAsset(legacy, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, destinationBase);
+
+	const didMigrate = await migrateLegacyStash(CWD, destinationBase, legacyBase);
+
+	assert.equal(didMigrate, true);
+	const migrated = await loadStashStore(destination);
+	assert.equal(migrated.entries[0]?.text, "vendored draft");
+	assert.equal(migrated.entries[0]?.label, "vendored label");
+	assert.deepEqual(
+		readFileSync(path.join(destination.assetDir(ACTIVE_ID), "00-image.png")),
+		ACTIVE_BYTES,
+	);
+	assert.equal(
+		JSON.parse(readFileSync(destination.stashFile, "utf8")).schemaVersion,
+		STASH_SCHEMA_VERSION,
+	);
+	assert.equal(JSON.parse(readFileSync(destination.stashFile, "utf8")).cwd, destination.sanitized);
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(legacy.assetDir(ACTIVE_ID)), false);
+});
+
+test("migrateLegacyStash upgrades a v1-key stash in place under the same root", async () => {
+	const entry: LegacyV1Entry = {
+		id: ACTIVE_ID,
+		text: "same root draft",
+		createdAt: CREATED_AT,
+	};
+	const legacy = writeLegacyV1([entry]);
+	writeAsset(legacy, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, legacyBase);
+
+	assert.equal(await migrateLegacyStash(CWD, legacyBase, legacyBase), true);
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(legacy.assetDir(ACTIVE_ID)), false);
+	assert.equal((await loadStashStore(destination)).entries[0]?.text, "same root draft");
+	assert.equal(await migrateLegacyStash(CWD, legacyBase, legacyBase), false);
+});
+
+test("migrateLegacyStash resumes a same-root v1-key migration after asset copy", async () => {
+	const entry: LegacyV1Entry = {
+		id: ACTIVE_ID,
+		text: "interrupted same root",
+		createdAt: CREATED_AT,
+		assetCount: 1,
+	};
+	const legacy = writeLegacyV1([entry]);
+	writeAsset(legacy, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, legacyBase);
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, legacyBase, legacyBase, { failAfter: "assets" }),
+		/simulated migration interruption/,
+	);
+	assert.equal(existsSync(destination.stashFile), false);
+	assert.equal(existsSync(legacy.stashFile), true);
+
+	assert.equal(await migrateLegacyStash(CWD, legacyBase, legacyBase), true);
+	assert.equal((await loadStashStore(destination)).entries[0]?.text, "interrupted same root");
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(
+		readdirSync(legacyBase).some((name) => name.endsWith(".migration.json")),
+		false,
+	);
+});
+
+test("migrateLegacyStash refuses a same-root v1-key stash beside live v2 state", async () => {
+	writeLegacyV1();
+	const destination = resolveStashPaths(CWD, legacyBase);
+	mkdirSync(legacyBase, { recursive: true });
+	writeFileSync(destination.stashFile, "live state", { mode: 0o600 });
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, legacyBase, legacyBase),
+		/destination.*legacy stash/i,
+	);
+	assert.equal(readFileSync(destination.stashFile, "utf8"), "live state");
+	assert.equal(existsSync(resolveLegacyStashPaths(CWD, legacyBase).stashFile), true);
+});
+
+test("migrateLegacyStash rejects a v1-key file whose recorded cwd disagrees", async () => {
+	const legacy = writeLegacyV1([], "--elsewhere");
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
+		/malformed legacy stash/i,
+	);
+	assert.equal(existsSync(legacy.stashFile), true);
+	assert.equal(existsSync(resolveStashPaths(CWD, destinationBase).stashFile), false);
 });
