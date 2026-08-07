@@ -8,7 +8,7 @@ readonly PANE_RATIO="0.5"
 readonly PROCESS_EXIT_GRACE_SECONDS="1"
 readonly PRIVATE_DIR_MODE="700"
 readonly PRIVATE_FILE_MODE="600"
-readonly STASH_SHORTCUT="ctrl+alt+h"
+readonly STASH_SHORTCUT="ctrl+alt+s"
 readonly SMOKE_CANARY="PI_STASH_SMOKE_DRAFT_7E4A9C2D"
 
 package_input="${1:-}"

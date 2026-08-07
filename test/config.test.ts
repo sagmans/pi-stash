@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
+import { matchesKey } from "@earendil-works/pi-tui";
+
 import {
 	DEFAULT_LIST_SHORTCUT,
 	DEFAULT_STASH_CONFIG,
@@ -19,6 +21,9 @@ import {
 	loadStashConfig,
 	resolveStashConfigPath,
 } from "../src/config.ts";
+
+const LEGACY_CTRL_ALT_S_SEQUENCE = "\x1b\x13";
+const TERMINAL_ALT_BACKSPACE_SHORTCUT = "alt+backspace";
 
 let agentDir: string;
 let configDir: string;
@@ -53,6 +58,11 @@ test("loadStashConfig defaults omitted fields independently", async () => {
 	});
 	assert.equal(Object.isFrozen(DEFAULT_STASH_CONFIG), true);
 	assert.equal(Object.isFrozen(DEFAULT_STASH_CONFIG.keybindings), true);
+});
+
+test("default stash shortcut does not alias terminal Alt+Backspace", () => {
+	assert.equal(matchesKey(LEGACY_CTRL_ALT_S_SEQUENCE, DEFAULT_STASH_SHORTCUT), true);
+	assert.equal(matchesKey(LEGACY_CTRL_ALT_S_SEQUENCE, TERMINAL_ALT_BACKSPACE_SHORTCUT), false);
 });
 
 test("loadStashConfig accepts Pi shortcut key families including literal plus", async () => {
