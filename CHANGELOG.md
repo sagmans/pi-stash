@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-07
+
 ### Added
 
 - Add `/stash-apply [index-or-id]` to use a draft without removing its stash entry.
@@ -21,6 +23,7 @@ All notable changes to this project are documented here. This format follows
 
 ### Fixed
 
+- Align the checked-in Biome schema with the pinned CLI so release verification is warning-free.
 - Pin migration retries to one planned source, preserve typed conflict phases, decode the filesystem root, and cancel global sweeps between scopes.
 - Track migration and session operations through the same abortable queue lifecycle, including unavailable sessions.
 
@@ -86,7 +89,8 @@ Version 0.1.1 was tagged but not published to npm because its publication job fa
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/sagmans/pi-stash/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sagmans/pi-stash/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sagmans/pi-stash/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0
