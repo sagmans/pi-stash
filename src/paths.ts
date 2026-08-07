@@ -28,6 +28,8 @@ const BACKSLASH = "\\";
 const ESCAPED_BACKSLASH = "%5C";
 const HASH_ALGORITHM = "sha256";
 const HASH_LENGTH = 16;
+const MAX_UTF8_CHARACTER_BYTES = 4;
+const POSSIBLE_HASH_SUFFIX = new RegExp(`${SEPARATOR}[0-9a-f]{${HASH_LENGTH}}$`, "u");
 export function sanitizeCwd(cwd: string): string {
 	const segments = cwd.split("/").filter(Boolean).map(escapeSegment);
 	const sanitized = `${KEY_PREFIX}${segments.join(SEPARATOR)}`;
@@ -47,6 +49,36 @@ function escapeSegment(segment: string): string {
 		.replaceAll(ESCAPE_CHARACTER, ESCAPED_ESCAPE_CHARACTER)
 		.replaceAll(BACKSLASH, ESCAPED_BACKSLASH)
 		.replaceAll(SEPARATOR, ESCAPED_SEPARATOR);
+}
+
+function unescapeSegment(segment: string): string {
+	return segment
+		.replaceAll(ESCAPED_SEPARATOR, SEPARATOR)
+		.replaceAll(ESCAPED_BACKSLASH, BACKSLASH)
+		.replaceAll(ESCAPED_ESCAPE_CHARACTER, ESCAPE_CHARACTER);
+}
+
+/** Classify a sanitized key form; undefined for unrelated filenames. */
+export function isSanitizedKey(key: string): "v1" | "v2" | undefined {
+	if (key.startsWith(SEPARATOR)) return "v1";
+	if (key.startsWith(KEY_PREFIX)) return "v2";
+	return undefined;
+}
+
+// Global migration needs proof of scope identity. Historical v1 keys are
+// non-injective, while a max-length hash suffix can represent a truncated v2
+// key whose original cwd is unavailable; both must stay unresolved until Pi
+// supplies an authoritative cwd from that directory.
+export function cwdFromReversibleSanitizedKey(key: string): string | undefined {
+	if (isSanitizedKey(key) !== "v2" || couldBeTruncatedKey(key)) return undefined;
+	const body = key.slice(KEY_PREFIX.length);
+	const cwd = body.length === 0 ? "/" : `/${body.split(SEPARATOR).map(unescapeSegment).join("/")}`;
+	return sanitizeCwd(cwd) === key ? cwd : undefined;
+}
+
+function couldBeTruncatedKey(key: string): boolean {
+	const shortestTruncatedBytes = SANITIZE_MAX_LENGTH - (MAX_UTF8_CHARACTER_BYTES - 1);
+	return Buffer.byteLength(key) >= shortestTruncatedBytes && POSSIBLE_HASH_SUFFIX.test(key);
 }
 
 // The vendored predecessor keyed stashes without a version prefix and without

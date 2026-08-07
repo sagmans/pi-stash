@@ -8,8 +8,13 @@ readonly PANE_RATIO="0.5"
 readonly PROCESS_EXIT_GRACE_SECONDS="1"
 readonly PRIVATE_DIR_MODE="700"
 readonly PRIVATE_FILE_MODE="600"
-readonly STASH_SHORTCUT="ctrl+shift+s"
 readonly SMOKE_CANARY="PI_STASH_SMOKE_DRAFT_7E4A9C2D"
+readonly MIGRATION_SCOPE_KEY="v2--pi-stash--smoke-migration"
+readonly MIGRATION_ENTRY_ID="migration-entry"
+readonly MIGRATION_DRAFT="PI_STASH_SMOKE_MIGRATION_4B8C1E6F"
+readonly MIGRATION_SCHEMA_VERSION="2"
+readonly MIGRATION_CREATED_AT="1700000000000"
+readonly MIGRATION_SUCCESS="Stash migration: migrated 1, skipped 0"
 
 package_input="${1:-}"
 smoke_root=""
@@ -140,6 +145,10 @@ fi
 tar -xzf "$package_artifact" -C "$package_root"
 extension_path="$package_root/package/index.ts"
 [[ -f "$extension_path" ]] || fail "packaged extension entry point is unavailable"
+shipped_config="$package_root/package/config.json"
+[[ -f "$shipped_config" ]] || fail "packaged config.json is unavailable"
+stash_shortcut="$(node -e 'const { readFileSync } = require("node:fs"); console.log(JSON.parse(readFileSync(process.argv[1], "utf8")).keybindings.stash)' "$shipped_config")"
+[[ -n "$stash_shortcut" ]] || fail "packaged config.json does not declare the stash shortcut"
 
 clipboard_image="$tmp_root/pi-clipboard-$(node -e 'process.stdout.write(require("node:crypto").randomUUID())').png"
 node -e '
@@ -152,7 +161,7 @@ pi_version="$($pi_bin --version)"
 create_pane stash
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASH_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not ready"
-herdr pane send-keys "$pane_id" "$STASH_SHORTCUT" >/dev/null
+herdr pane send-keys "$pane_id" "$stash_shortcut" >/dev/null
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASHED" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "default native shortcut did not stash draft"
 assert_clean_output
@@ -174,17 +183,51 @@ process.stdout.write(filePath);
 ' "$stash_dir" "$SMOKE_CANARY" "$clipboard_image")" || fail "durable text and image stash state is invalid"
 close_pane || fail "first Pi launch left a live process"
 
-create_pane restore
-herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
+legacy_stash_dir="$smoke_home/.pi/agent/pi-stash"
+legacy_stash_file="$legacy_stash_dir/$MIGRATION_SCOPE_KEY.json"
+migrated_stash_file="$stash_dir/$MIGRATION_SCOPE_KEY.json"
+mkdir -p -- "$legacy_stash_dir"
+chmod "$PRIVATE_DIR_MODE" "$smoke_home/.pi" "$smoke_home/.pi/agent" "$legacy_stash_dir"
+node -e '
+const { writeFileSync } = require("node:fs");
+const [filePath, cwdKey, entryId, draft, schemaVersion, createdAt] = process.argv.slice(1);
+const timestamp = Number(createdAt);
+const file = {
+  schemaVersion: Number(schemaVersion),
+  cwd: cwdKey,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  entries: [{ id: entryId, text: draft, createdAt: timestamp }],
+  restoredAssetLeases: [],
+  pendingAssetCleanup: [],
+};
+writeFileSync(filePath, JSON.stringify(file), { mode: 0o600, flag: "wx" });
+' "$legacy_stash_file" "$MIGRATION_SCOPE_KEY" "$MIGRATION_ENTRY_ID" "$MIGRATION_DRAFT" \
+	"$MIGRATION_SCHEMA_VERSION" "$MIGRATION_CREATED_AT"
+
+create_pane pop
+herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_POP_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "second Pi launch did not load packaged commands"
-herdr pane run "$pane_id" "/stash-restore" >/dev/null
+herdr pane run "$pane_id" "/stash-migrate" >/dev/null
+herdr pane wait-output "$pane_id" --match "$MIGRATION_SUCCESS" --source recent-unwrapped \
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "legacy scope was not migrated"
+node -e '
+const { existsSync, readFileSync } = require("node:fs");
+const [source, destination, draft] = process.argv.slice(1);
+if (existsSync(source) || !existsSync(destination)) process.exit(1);
+const file = JSON.parse(readFileSync(destination, "utf8"));
+if (!Array.isArray(file.entries) || file.entries.length !== 1 || file.entries[0]?.text !== draft) {
+  process.exit(1);
+}
+' "$legacy_stash_file" "$migrated_stash_file" "$MIGRATION_DRAFT" || fail "migrated state is invalid"
+herdr pane run "$pane_id" "/stash-pop" >/dev/null
 herdr pane wait-output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not popped"
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored editor was not cleared for cleanup"
-herdr pane run "$pane_id" "/stash-cleanup" >/dev/null
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "popped editor was not cleared for image cleanup"
+herdr pane run "$pane_id" "/stash-cleanup-images" >/dev/null
 herdr pane wait-output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "restored image cleanup did not complete"
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "popped image cleanup did not complete"
 assert_clean_output
 node -e '
 const { existsSync, readFileSync, readdirSync } = require("node:fs");
@@ -196,7 +239,7 @@ if (!Array.isArray(file.restoredAssetLeases) || file.restoredAssetLeases.length 
 if (!Array.isArray(file.pendingAssetCleanup) || file.pendingAssetCleanup.length !== 0) process.exit(1);
 const assetsRoot = path.join(path.dirname(filePath), `${file.cwd}-assets`);
 if (existsSync(assetsRoot) && readdirSync(assetsRoot).length !== 0) process.exit(1);
-' "$stash_file" || fail "restored stash or image cleanup remained on disk"
+' "$stash_file" || fail "popped stash or image cleanup remained on disk"
 close_pane || fail "second Pi launch left a live process"
 
-printf 'pi-stash Herdr smoke passed: packaged draft and image survived two launches, restored, and were removed\n'
+printf 'pi-stash Herdr smoke passed: packaged migration, draft, and image flows completed across two launches\n'

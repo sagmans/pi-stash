@@ -6,6 +6,7 @@
 	"files": [
 		"index.ts",
 		"src",
+		"config.json",
 		"docs",
 		"CHANGELOG.md",
 		"CONTEXT.md",

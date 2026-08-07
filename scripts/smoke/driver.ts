@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "../../src/host.ts";
 
 const STASH_READY_MARKER = "PI_STASH_SMOKE_STASH_READY";
 const STASHED_MARKER = "PI_STASH_SMOKE_STASHED";
-const RESTORE_READY_MARKER = "PI_STASH_SMOKE_RESTORE_READY";
+const POP_READY_MARKER = "PI_STASH_SMOKE_POP_READY";
 const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
 const FAILED_MARKER = "PI_STASH_SMOKE_FAILED";
 const POLL_INTERVAL_MS = 25;
@@ -14,13 +14,22 @@ const STASH_TIMEOUT_MS = 15_000;
 // Pi notifications are transient: repeat markers so the Herdr-side watcher
 // cannot miss them between its own poll cycles.
 const MARKER_REPEAT_MS = 250;
-const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-cleanup"] as const;
+const REQUIRED_COMMANDS = [
+	"stash",
+	"stash-pop",
+	"stash-list",
+	"stash-drop",
+	"stash-apply",
+	"stash-clear",
+	"stash-migrate",
+	"stash-cleanup-images",
+] as const;
 
 type SmokeConfig = {
 	canary: string;
 	extensionPath: string;
 	imagePath: string;
-	phase: "stash" | "restore";
+	phase: "stash" | "pop";
 };
 
 function smokeConfig(): SmokeConfig | undefined {
@@ -28,7 +37,7 @@ function smokeConfig(): SmokeConfig | undefined {
 	const extensionPath = process.env.PI_STASH_SMOKE_EXTENSION;
 	const imagePath = process.env.PI_STASH_SMOKE_IMAGE;
 	const canary = process.env.PI_STASH_SMOKE_CANARY;
-	if ((phase !== "stash" && phase !== "restore") || !extensionPath || !imagePath || !canary) {
+	if ((phase !== "stash" && phase !== "pop") || !extensionPath || !imagePath || !canary) {
 		return undefined;
 	}
 	return { phase, extensionPath, imagePath, canary };
@@ -36,15 +45,16 @@ function smokeConfig(): SmokeConfig | undefined {
 
 function hasPackagedCommands(pi: ExtensionAPI, extensionPath: string): boolean {
 	const expectedPath = path.resolve(extensionPath);
-	return REQUIRED_COMMANDS.every((name) =>
-		pi
-			.getCommands()
-			.some(
-				(command) =>
-					command.name === name &&
-					command.source === "extension" &&
-					path.resolve(command.sourceInfo.path) === expectedPath,
-			),
+	const packagedNames = pi
+		.getCommands()
+		.filter(
+			(command) =>
+				command.source === "extension" && path.resolve(command.sourceInfo.path) === expectedPath,
+		)
+		.map(({ name }) => name);
+	return (
+		packagedNames.length === REQUIRED_COMMANDS.length &&
+		REQUIRED_COMMANDS.every((name) => packagedNames.includes(name))
 	);
 }
 
@@ -86,8 +96,8 @@ export default function installSmokeDriver(pi: ExtensionAPI): void {
 			emitMarker((text, level) => ctx.ui.notify(text, level), FAILED_MARKER, "error");
 			return;
 		}
-		if (config.phase === "restore") {
-			emitMarker((text, level) => ctx.ui.notify(text, level), RESTORE_READY_MARKER, "info");
+		if (config.phase === "pop") {
+			emitMarker((text, level) => ctx.ui.notify(text, level), POP_READY_MARKER, "info");
 			pollDeadline = Date.now() + STASH_TIMEOUT_MS;
 			const poll = () => {
 				if (ctx.ui.getEditorText().includes(config.canary)) {

@@ -71,7 +71,7 @@ test("every widget row fits terminal columns at narrow and Unicode boundaries", 
 		entry({ text: "second" }),
 	];
 	for (const width of [0, 1, 2, 5, 12, 20, 40]) {
-		const lines = render(entries, { openHint: "ctrl+shift+r to open", width });
+		const lines = render(entries, { openHint: "ctrl+alt+l to open", width });
 		assert.equal(
 			lines.some((line) => visibleWidth(line) > width),
 			false,

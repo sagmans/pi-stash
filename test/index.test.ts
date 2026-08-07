@@ -16,15 +16,15 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import install from "../index.ts";
-import { DEFAULT_LIST_SHORTCUT, DEFAULT_STASH_SHORTCUT } from "../src/config.ts";
-import type { ExtensionAPI, StashKeybindings } from "../src/host.ts";
+import { SHIPPED_STASH_CONFIG } from "../src/config.ts";
+import { type ExtensionAPI, formatKeyText, type StashKeybindings } from "../src/host.ts";
 import { installPiStash, isSupportedSession } from "../src/index.ts";
 import { beginAddIntent, beginRestoreIntent, reconcileMutationIntents } from "../src/intents.ts";
 import {
 	doAssetCleanup,
 	doClear,
 	doDrop,
-	doRestore,
+	doPop as doRestore,
 	doStash,
 	drainAssetCleanup,
 	openOverlay,
@@ -32,7 +32,7 @@ import {
 	type StashUi,
 } from "../src/operations.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
-import { resolveStashPaths } from "../src/paths.ts";
+import { resolveLegacyStashPaths, resolveStashPaths } from "../src/paths.ts";
 import { removePrivateDirectory as removeAssetDir } from "../src/private-fs.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/store.ts";
 
@@ -58,11 +58,13 @@ const CUSTOM_KEYBINDINGS = {
 } as StashKeybindings;
 const STASH_COMMAND_NAMES = [
 	"stash",
+	"stash-pop",
 	"stash-list",
-	"stash-restore",
 	"stash-drop",
-	"stash-cleanup",
+	"stash-apply",
 	"stash-clear",
+	"stash-migrate",
+	"stash-cleanup-images",
 ] as const;
 
 const directTempImages: string[] = [];
@@ -395,7 +397,7 @@ test("doRestore restores the newest draft into the editor and removes it", async
 	assert.equal(ui.editorText, "second");
 	assert.equal(store.entryCount, 1);
 	assert.equal(store.entries[0]?.text, "first");
-	assert.ok(ui.notifs.some((n) => n.message.startsWith("Restored")));
+	assert.ok(ui.notifs.some((n) => n.message.startsWith("Popped")));
 });
 
 test("doRestore keeps a committed restore when lock release fails", async () => {
@@ -1011,7 +1013,10 @@ test("refreshWidget warns once when a committed schema upgrade cannot sync", asy
 test("default native shortcuts dispatch stash and list actions", async () => {
 	const { pi, handlers, shortcuts } = extensionHarness();
 	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
-	assert.deepEqual([...shortcuts.keys()], [DEFAULT_STASH_SHORTCUT, DEFAULT_LIST_SHORTCUT]);
+	assert.deepEqual(
+		[...shortcuts.keys()],
+		[SHIPPED_STASH_CONFIG.keybindings.stash, SHIPPED_STASH_CONFIG.keybindings.list],
+	);
 
 	const cwd = "/default-native-shortcuts";
 	const ui = fakeUi({ editorText: "draft from editor" });
@@ -1022,12 +1027,12 @@ test("default native shortcuts dispatch stash and list actions", async () => {
 	};
 	const ctx = { cwd, mode: "tui", hasUI: true, ui };
 	await handlers.get("session_start")?.({}, ctx);
-	await shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(ctx);
+	await shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(ctx);
 
 	const paths = resolveStashPaths(cwd, path.join(baseDir, "pi-stash"));
 	assert.equal((await loadStashStore(paths)).entries[0]?.text, "draft from editor");
 	assert.equal(ui.editorText, "");
-	await shortcuts.get(DEFAULT_LIST_SHORTCUT)?.handler(ctx);
+	await shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.list)?.handler(ctx);
 	assert.equal(listOpened, 1);
 	await handlers.get("session_shutdown")?.({}, ctx);
 });
@@ -1118,6 +1123,52 @@ test("slash stash persists its argument without reading or clearing the editor",
 	await handlers.get("session_shutdown")?.({}, ctx);
 });
 
+test("registers the exact stash command surface", async () => {
+	const { pi, commands } = extensionHarness();
+	await install(pi);
+
+	assert.deepEqual([...commands.keys()], [...STASH_COMMAND_NAMES]);
+});
+
+test("slash stash apply uses the selected draft without removing it", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	await install(pi);
+	const ui = fakeUi();
+	const ctx = { cwd: "/apply-command", mode: "tui", hasUI: true, ui };
+	const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	const store = await loadStashStore(paths);
+	await store.add({ text: "older draft" });
+	await store.add({ text: "newer draft" });
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	await commands.get("stash-apply")?.handler("1", ctx);
+
+	assert.equal(ui.editorText, "older draft");
+	assert.equal((await loadStashStore(paths)).entryCount, 2);
+	assert.ok(ui.notifs.some(({ message }) => message === "Applied [1]"));
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+});
+
+test("slash stash pop removes the selected draft", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	await install(pi);
+	const ui = fakeUi();
+	const ctx = { cwd: "/pop-command", mode: "tui", hasUI: true, ui };
+	const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	const store = await loadStashStore(paths);
+	await store.add({ text: "older draft" });
+	await store.add({ text: "newer draft" });
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	await commands.get("stash-pop")?.handler("1", ctx);
+
+	assert.equal(ui.editorText, "older draft");
+	const reopened = await loadStashStore(paths);
+	assert.equal(reopened.entryCount, 1);
+	assert.equal(reopened.entries[0]?.text, "newer draft");
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
+});
+
 test("registered commands execute the documented stash workflows", async () => {
 	const { pi, handlers, commands } = extensionHarness();
 	await install(pi);
@@ -1138,13 +1189,25 @@ test("registered commands execute the documented stash workflows", async () => {
 	await commands.get("stash-list")?.handler("", ctx);
 	assert.equal(listOpened, 1);
 
-	await commands.get("stash-restore")?.handler("0", ctx);
+	await commands.get("stash-apply")?.handler("0", ctx);
 	assert.equal(ui.editorText, "unrelated editor draft");
 	assert.ok(ui.notifs.some(({ message }) => message.includes("Clear or stash")));
 	ui.editorText = "";
-	await commands.get("stash-restore")?.handler("0", ctx);
+	await commands.get("stash-apply")?.handler("0", ctx);
+	assert.equal(ui.editorText, "saved through command");
+	assert.equal((await loadStashStore(paths)).entryCount, 1);
+	ui.editorText = "";
+	await commands.get("stash-pop")?.handler("0", ctx);
 	assert.equal(ui.editorText, "saved through command");
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
+
+	ui.editorText = "";
+	await commands.get("stash")?.handler("pop through command", ctx);
+	await commands.get("stash-pop")?.handler("", ctx);
+	assert.equal(ui.editorText, "pop through command");
+	assert.equal((await loadStashStore(paths)).entryCount, 0);
+	await commands.get("stash-pop")?.handler("", ctx);
+	assert.ok(ui.notifs.at(-1)?.message.includes("No stashed drafts"));
 
 	ui.editorText = "";
 	await commands.get("stash")?.handler("drop through command", ctx);
@@ -1152,7 +1215,7 @@ test("registered commands execute the documented stash workflows", async () => {
 	assert.ok(ui.notifs.at(-1)?.message.includes('No stash entry matching "missing"'));
 	await commands.get("stash-drop")?.handler("0", ctx);
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
-	await commands.get("stash-cleanup")?.handler("", ctx);
+	await commands.get("stash-cleanup-images")?.handler("", ctx);
 	assert.equal(
 		ui.notifs.at(-1)?.message,
 		"Asset cleanup: removed 0, retained 0, removal failed 0, acknowledgement failed 0",
@@ -1161,6 +1224,10 @@ test("registered commands execute the documented stash workflows", async () => {
 	await commands.get("stash")?.handler("clear through command", ctx);
 	await commands.get("stash-clear")?.handler("", ctx);
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
+
+	await commands.get("stash")?.handler("migrate through command", ctx);
+	await commands.get("stash-migrate")?.handler("", ctx);
+	assert.ok(ui.notifs.at(-1)?.message.startsWith("Stash migration: migrated"));
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 
@@ -1169,16 +1236,24 @@ test("command help states selectors, editor prerequisites, and destructive effec
 	installPiStash(pi);
 
 	assert.match(commands.get("stash")?.description ?? "", /draft supplied.*without changing/iu);
+	assert.match(commands.get("stash-pop")?.description ?? "", /index-or-id.*empty editor.*remove/iu);
 	assert.match(commands.get("stash-list")?.description ?? "", /search.*empty editor/iu);
-	assert.match(commands.get("stash-restore")?.description ?? "", /index-or-id.*empty editor/iu);
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
-	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
+	assert.match(
+		commands.get("stash-apply")?.description ?? "",
+		/index-or-id.*empty editor.*without removing/iu,
+	);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);
+	assert.match(commands.get("stash-migrate")?.description ?? "", /legacy.*manual review/iu);
+	assert.match(
+		commands.get("stash-cleanup-images")?.description ?? "",
+		/unreferenced.*images.*editor/iu,
+	);
 });
 
 test("omp-shaped sessions without a mode field execute stash commands", async () => {
 	const { pi, handlers, commands } = extensionHarness();
-	installPiStash(pi, { isTerminal: true });
+	installPiStash(pi, { isTerminal: true, legacyBaseDir: path.join(baseDir, "legacy") });
 	const ui = fakeUi({ editorText: "unrelated omp editor draft" });
 	// omp's ExtensionContext exposes cwd/hasUI/ui but omits the mode field.
 	const ctx = { cwd: "/omp-contract", hasUI: true, ui };
@@ -1190,7 +1265,7 @@ test("omp-shaped sessions without a mode field execute stash commands", async ()
 	assert.equal((await loadStashStore(paths)).entries[0]?.text, "omp draft");
 
 	ui.editorText = "";
-	await commands.get("stash-restore")?.handler("", ctx);
+	await commands.get("stash-pop")?.handler("", ctx);
 	assert.equal(ui.editorText, "omp draft");
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
@@ -1248,7 +1323,11 @@ test("session startup shows the configured list shortcut in the stash widget", a
 
 	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
 
-	assert.ok(ui.widgets.get("pi-stash")?.[0]?.includes("ctrl+shift+r to open"));
+	assert.ok(
+		ui.widgets
+			.get("pi-stash")?.[0]
+			?.includes(`${formatKeyText(SHIPPED_STASH_CONFIG.keybindings.list)} to open`),
+	);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 
@@ -1266,7 +1345,7 @@ test("duplicate extension instances expose one native handler per shortcut", asy
 	await secondStart?.({ type: "session_start" }, ctx);
 
 	assert.equal(shortcuts.size, 2);
-	await shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(ctx);
+	await shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(ctx);
 	await firstShutdown?.({ type: "session_shutdown" }, ctx);
 	await secondShutdown?.({ type: "session_shutdown" }, ctx);
 
@@ -1281,14 +1360,14 @@ test("session replacement isolates queued work and widgets across worktrees", as
 	const firstContext = { cwd: "/first-worktree", mode: "tui", hasUI: true, ui: firstUi };
 	await handlers.get("session_start")?.({}, firstContext);
 
-	const firstStash = shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(firstContext);
+	const firstStash = shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(firstContext);
 	const secondUi = fakeUi({ editorText: "second worktree draft" });
 	const secondContext = { cwd: "/second-worktree", mode: "tui", hasUI: true, ui: secondUi };
 	await handlers.get("session_start")?.({}, secondContext);
 	await firstStash;
 
 	assert.equal(firstUi.widgets.has("pi-stash"), false);
-	await shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(secondContext);
+	await shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(secondContext);
 	const stashRoot = path.join(baseDir, "pi-stash");
 	assert.equal(
 		(await loadStashStore(resolveStashPaths(firstContext.cwd, stashRoot))).entryCount,
@@ -1308,8 +1387,8 @@ test("session shutdown cancels native shortcut operations that have not started"
 	const ctx = { cwd: "/queued-repo", mode: "tui", hasUI: true, ui };
 	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
 
-	void shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(ctx);
-	void shortcuts.get(DEFAULT_STASH_SHORTCUT)?.handler(ctx);
+	void shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(ctx);
+	void shortcuts.get(SHIPPED_STASH_CONFIG.keybindings.stash)?.handler(ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 
 	const paths = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
@@ -1352,6 +1431,9 @@ test("unsupported schema stays unavailable across startup and every command", as
 		assert.ok(unavailableReason.includes("export"));
 		assert.ok(ui.widgets.get("pi-stash")?.some((line) => line.includes("unavailable")));
 		for (const name of STASH_COMMAND_NAMES) {
+			// The migration sweep deliberately runs from an unavailable session
+			// and would change the trailing notification.
+			if (name === "stash-migrate") continue;
 			await commands.get(name)?.handler("0", ctx);
 			assert.equal(ui.notifs.at(-1)?.message, unavailableReason, name);
 		}
@@ -1359,6 +1441,153 @@ test("unsupported schema stays unavailable across startup and every command", as
 		assert.equal((await loadStashStore(legacyPaths)).entries[0]?.text, "legacy stays put");
 		assert.equal(readdirSync(path.dirname(paths.stashFile)).length, 1);
 	}
+});
+
+test("startup surfaces a migration conflict with file paths and removal guidance", async () => {
+	const { pi, handlers } = extensionHarness();
+	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "pi-stash") });
+	const ui = fakeUi();
+	const ctx = { cwd: "/conflict-scope", mode: "tui", hasUI: true, ui };
+	const base = path.join(baseDir, "pi-stash");
+	const destination = resolveStashPaths(ctx.cwd, base);
+	const legacy = resolveLegacyStashPaths(ctx.cwd, base);
+	mkdirSync(base, { recursive: true });
+	const currentFile = {
+		schemaVersion: STASH_SCHEMA_VERSION,
+		cwd: destination.sanitized,
+		createdAt: 1,
+		updatedAt: 1,
+		entries: [{ id: "current-entry", text: "current draft", createdAt: 1 }],
+		restoredAssetLeases: [],
+		pendingAssetCleanup: [],
+	};
+	writeFileSync(destination.stashFile, JSON.stringify(currentFile), { mode: 0o600 });
+	writeFileSync(
+		legacy.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: legacy.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [{ id: "legacy-entry", text: "legacy draft", createdAt: 1 }],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	const reason = ui.notifs.at(-1)?.message ?? "";
+	assert.ok(reason.includes("pi-stash unavailable"), reason);
+	assert.ok(reason.includes(legacy.stashFile), reason);
+	assert.ok(reason.includes(destination.stashFile), reason);
+	assert.match(reason, /remove/i);
+	assert.match(reason, /reload/i);
+	assert.equal(readFileSync(destination.stashFile, "utf8"), JSON.stringify(currentFile));
+	assert.equal(existsSync(legacy.stashFile), true);
+});
+
+test("startup hints /stash-migrate when any legacy scope conflicts", async () => {
+	const { pi, handlers } = extensionHarness();
+	const legacyBaseDir = path.join(baseDir, "legacy");
+	installPiStash(pi, { legacyBaseDir });
+	const conflicted = resolveStashPaths("/conflicted/scope", legacyBaseDir);
+	mkdirSync(legacyBaseDir, { recursive: true });
+	writeFileSync(
+		conflicted.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: conflicted.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+	const destination = resolveStashPaths("/conflicted/scope", path.join(baseDir, "pi-stash"));
+	mkdirSync(path.dirname(destination.stashFile), { recursive: true });
+	writeFileSync(
+		destination.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: destination.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	const ui = fakeUi();
+	const ctx = { cwd: "/clean/scope", mode: "tui", hasUI: true, ui };
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	const hint = ui.notifs.find(({ message }) => message.includes("/stash-migrate"));
+	assert.ok(hint, JSON.stringify(ui.notifs));
+	assert.match(hint?.message ?? "", /1 legacy stash conflict/);
+});
+
+test("an unavailable session runs /stash-migrate without moving conflicting state", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	const legacyBaseDir = path.join(baseDir, "legacy");
+	installPiStash(pi, { legacyBaseDir });
+	const ui = fakeUi();
+	const ctx = { cwd: "/conflict-scope", mode: "tui", hasUI: true, ui };
+	const legacy = resolveLegacyStashPaths(ctx.cwd, legacyBaseDir);
+	mkdirSync(legacyBaseDir, { recursive: true });
+	writeFileSync(
+		legacy.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: legacy.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+	const destination = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	mkdirSync(path.dirname(destination.stashFile), { recursive: true });
+	writeFileSync(
+		destination.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: destination.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+	assert.ok(
+		ui.notifs.at(-1)?.message?.includes("destination conflicts") ?? false,
+		ui.notifs.at(-1)?.message ?? "",
+	);
+
+	await commands.get("stash-migrate")?.handler("", ctx);
+
+	assert.equal(existsSync(legacy.stashFile), true);
+	assert.equal(existsSync(`${legacy.stashFile}.migrate-conflict`), false);
+	assert.equal(existsSync(destination.stashFile), true);
+	assert.ok(ui.notifs.some(({ message }) => message.includes("skipped 1 for manual review")));
+	assert.ok(
+		ui.notifs.at(-1)?.message?.includes("/reload") ?? false,
+		ui.notifs.at(-1)?.message ?? "",
+	);
+	// Other commands remain blocked until the user restarts or reloads.
+	await commands.get("stash")?.handler("blocked", ctx);
+	assert.ok(ui.notifs.at(-1)?.message?.includes("destination conflicts") ?? false);
 });
 
 test("an unsupported session cannot leak the previous scope's unavailable reason", async () => {
@@ -1376,7 +1605,7 @@ test("an unsupported session cannot leak the previous scope's unavailable reason
 			entries: [],
 		}),
 	);
-	installPiStash(pi);
+	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
 	const unavailableUi = fakeUi();
 	await handlers.get("session_start")?.(
 		{},

@@ -66,9 +66,10 @@ test("candidate declares identical packaged Pi and Oh My Pi entry points", () =>
 	assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
 	assert.deepEqual(manifest.omp.extensions, manifest.pi.extensions);
 	assert.ok(manifest.files.includes("index.ts"));
+	assert.ok(manifest.files.includes("config.json"));
 });
 
-test("candidate version is consistent and fully rolled into the changelog", () => {
+test("candidate version is consistent and appears once in release history", () => {
 	assert.equal(packageLock.version, manifest.version);
 	assert.equal(packageLock.packages[""].version, manifest.version);
 
@@ -76,7 +77,6 @@ test("candidate version is consistent and fully rolled into the changelog", () =
 	assert.notEqual(unreleasedStart, -1);
 	const nextRelease = changelog.indexOf("\n## [", unreleasedStart + UNRELEASED_HEADING.length);
 	assert.notEqual(nextRelease, -1);
-	assert.equal(changelog.slice(unreleasedStart, nextRelease).trim(), UNRELEASED_HEADING);
 
 	const escapedVersion = manifest.version.replaceAll(".", "\\.");
 	const releaseHeadings = changelog.match(

@@ -36,34 +36,46 @@ of distinct image bytes in total. Repeated references to identical bytes share
 one owned copy. The source is read from one validated file descriptor, and the
 copy is committed under that stash entry's private asset directory.
 
-Stash entries remain until restored, dropped, or cleared; there is no automatic
-age or count expiry. Restore removes the entry but records a durable lease for
-its copied images because the restored editor text still references them.
-`/stash-cleanup` retains leases referenced by the current editor and queues the
-rest for deletion. Close other Pi sessions for the same worktree scope before
-running cleanup, because it can only inspect the current editor. Restashing a
-restored draft transfers referenced owned images into the new entry.
+Stash entries remain until popped, dropped, or cleared; applying an entry keeps
+it in the stash, and there is no automatic age or count expiry. Pop removes the
+entry but records a durable lease for its copied images because the popped
+editor text still references them. `/stash-cleanup-images` retains leases
+referenced by the current editor and queues the rest for deletion. Close other
+Pi sessions for the same worktree scope before running cleanup, because it can
+only inspect the current editor. Restashing a popped draft transfers referenced
+owned images into the new entry.
 
 Drop and confirmed clear commit entry removal before best-effort asset deletion.
-A cleanup failure therefore does not restore the deleted draft: the asset ID
+A cleanup failure therefore does not recreate the deleted draft: the asset ID
 stays in pending cleanup and is retried during later session startup or
-`/stash-cleanup`. Deletion is ordinary filesystem removal, not secure erasure.
+`/stash-cleanup-images`. Deletion is ordinary filesystem removal, not secure
+erasure.
 
 ## Automatic migration
 
-When Pi's configured agent directory differs from the historical fixed
-`~/.pi/agent` location, startup checks the legacy `~/.pi/agent/pi-stash/` root
-for the current worktree scope only. If the configured destination is empty,
+Startup checks the current worktree in the historical fixed
+`~/.pi/agent/pi-stash/` root and checks for an unprefixed v1 key beside current
+storage. If the configured destination is empty and exactly one source exists,
 pi-stash copies normalized state and only assets owned by that scope, verifies
 the destination, then removes the migrated source. A private marker makes an
 interrupted migration resumable.
 
 A pre-existing destination, malformed legacy state or marker, missing required
-asset, unsafe file, or conflicting copied bytes stops migration. pi-stash does
-not overwrite either stash to guess at a merge. Exit Pi, back up both roots and
-any marker, and resolve the conflict with a trusted copy of the same or newer
-extension before retrying. Schema version 1 files in an otherwise current root
-are upgraded atomically to schema version 2 on load.
+asset, unsafe file, competing source, or conflicting copied bytes stops
+migration. pi-stash does not overwrite, merge, or quarantine either stash to
+guess at a winner. Exit Pi, back up both roots and any marker, and resolve the
+conflict with a trusted copy of the same or newer extension before retrying.
+Schema version 1 files in an otherwise current root are upgraded atomically to
+schema version 2 on load.
+
+`/stash-migrate` extends the scan beyond the current scope only where the
+on-disk key proves the original working directory: untruncated v2 keys are
+reversible, including the filesystem root. Historical v1 keys are not
+injective, and truncated v1 or v2 keys omit part of the original path, so the
+sweep leaves them untouched unless the key matches Pi's authoritative current
+working directory. Every skipped path and reason is reported for private manual
+review. The sweep checks cancellation between scopes and a migration marker
+pins retries to the exact source that began the operation.
 
 ## Recovery notices
 
@@ -88,16 +100,16 @@ pi-stash intentionally provides no destructive automatic import.
 
 The draft action may already be committed while copied-image removal failed.
 Keep the pending metadata and asset directory intact. Close other Pi sessions
-for the scope, then run `/stash-cleanup` or restart Pi to retry pending cleanup.
+for the scope, then run `/stash-cleanup-images` or restart Pi to retry pending cleanup.
 If failure persists, back up the whole scope and inspect ownership, permissions,
 free space, and path types without replacing links or weakening permissions.
 
 ### Interrupted mutation or stale lock
 
-Startup reconciles abandoned add and restore intents: uncommitted staged assets
-are removed, while a restore removed before editor acknowledgement is returned
-to the stash. Assets leased to a restored draft are treated as committed
-ownership and are never removed by intent recovery. Provably dead local locks
+Startup reconciles abandoned add and pop intents: uncommitted staged assets are
+removed, while an entry popped before editor acknowledgement is returned to the
+stash. Assets leased to a popped draft are treated as committed ownership and
+are never removed by intent recovery. Provably dead local locks
 and stale malformed locks are reclaimed, and the same rules reclaim orphaned
 lock-reclamation guards. Live, foreign-host, or uncertain locks fail closed
 after a timeout; fresh malformed metadata is diagnosed without immediate

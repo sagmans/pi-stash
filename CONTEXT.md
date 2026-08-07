@@ -20,9 +20,13 @@ _Avoid_: History, queue
 The exact current working directory whose drafts share one private stash file; linked worktrees remain separate.
 _Avoid_: Repository scope, project scope
 
-**Restore**:
-Place a stash entry into the editor and remove that entry from the stash while retaining copied assets referenced by its text.
-_Avoid_: Pop when describing user behavior
+**Pop**:
+Place a stash entry into the editor and remove that entry from the stash while retaining copied images referenced by its text.
+_Avoid_: Restore
+
+**Apply**:
+Place a stash entry into the editor without removing that entry from the stash.
+_Avoid_: Restore, Pop
 
 **Drop**:
 Delete a stash entry and its copied assets without placing its draft into the editor.
@@ -33,7 +37,7 @@ After confirmation, delete every stash entry and copied asset for the current wo
 _Avoid_: Drop
 
 **Persisted image**:
-A temporary-directory image copied into private stash storage so a restored draft retains a valid reference.
+A temporary-directory image copied into private stash storage so an applied or popped draft retains a valid reference.
 _Avoid_: Attachment, uploaded image
 
 **Pending asset cleanup**:
