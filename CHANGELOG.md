@@ -6,7 +6,11 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-08-06
+## [0.1.1] - 2026-08-07
+
+### Changed
+
+- Run hosted source and release verification once on Ubuntu with Node 24 while retaining the documented runtime support contract.
 
 ### Fixed
 

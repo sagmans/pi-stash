@@ -12,8 +12,7 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
 ## Gates — all required before tagging
 
 1. Candidate lands on `main` through a reviewed PR (squash merge).
-2. Full CI matrix green on the exact merged SHA: Ubuntu + macOS ×
-   Node 22.19.0 + 24, audit gate included.
+2. Hosted CI green on the exact merged SHA: Ubuntu with Node 24, audit gate included.
 3. `npm run verify:ci` green locally for the maintainer without warnings or
    warning-suppression flags.
 4. Packaged two-launch smoke in a Herdr-managed pane against the exact candidate:
@@ -88,13 +87,13 @@ git push origin vX.Y.Z
 
 Tag creation for `v*` is restricted to repository admins by a ruleset. The
 tag push triggers `release` workflow. Its `package` job creates one npm artifact;
-Ubuntu and macOS then run source verification and check installed artifact entry
-on Node 22.19.0 and 24. Approval-gated `publish` job depends on package job and
-complete matrix, so failed, cancelled, skipped, or timed-out leg blocks
-publication. It downloads and publishes same digest-validated artifact; it never
-rebuilds from checkout. Inspect every matrix leg and package job when publication
-is blocked, then rerun failed workflow only after correcting candidate or
-transient infrastructure failure.
+Ubuntu on Node 24 then runs source verification and checks the installed artifact
+entry. Approval-gated `publish`
+job depends on package and verification, so a failed, cancelled, skipped, or
+timed-out job blocks publication. It downloads and publishes the same
+digest-validated artifact; it never rebuilds from checkout. Inspect verification
+and package jobs when publication is blocked, then rerun a failed workflow only
+after correcting the candidate or a transient infrastructure failure.
 
 After prerequisite jobs succeed, workflow waits for release owner's approval on
 `npm-release` environment. Approved publish job uses OIDC trusted publishing (no
