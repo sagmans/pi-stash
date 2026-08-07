@@ -49,6 +49,32 @@ function escapeSegment(segment: string): string {
 		.replaceAll(SEPARATOR, ESCAPED_SEPARATOR);
 }
 
+function unescapeSegment(segment: string): string {
+	return segment
+		.replaceAll(ESCAPED_SEPARATOR, SEPARATOR)
+		.replaceAll(ESCAPED_BACKSLASH, BACKSLASH)
+		.replaceAll(ESCAPED_ESCAPE_CHARACTER, ESCAPE_CHARACTER);
+}
+
+/** Classify a sanitized key form; undefined for unrelated filenames. */
+export function isSanitizedKey(key: string): "v1" | "v2" | undefined {
+	if (key.startsWith(SEPARATOR)) return "v1";
+	if (key.startsWith(KEY_PREFIX)) return "v2";
+	return undefined;
+}
+
+// Legacy stash files embed the flattened key as their cwd field, so a sweep
+// recovers the original cwd by inverting the sanitizer. Escaping is injective
+// below the truncation length, so the recomputed key matches the filename;
+// truncated long-path keys fail that check and are left alone.
+export function cwdFromSanitizedKey(key: string): string | undefined {
+	const prefix = isSanitizedKey(key);
+	if (!prefix) return undefined;
+	const body = key.slice(prefix === "v1" ? SEPARATOR.length : KEY_PREFIX.length);
+	if (body.length === 0) return undefined;
+	return `/${body.split(SEPARATOR).map(unescapeSegment).join("/")}`;
+}
+
 // The vendored predecessor keyed stashes without a version prefix and without
 // segment escaping. Discovery of those files must reproduce that algorithm
 // exactly — including UTF-16 length limits and backslash-as-separator — or a

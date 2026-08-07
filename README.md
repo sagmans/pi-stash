@@ -53,6 +53,7 @@ divergent behavior through the bug channel.
 | Pop newest entry into the editor | `/stash-pop` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
+| Migrate every legacy stash scope, quarantining conflicts | `/stash-migrate` | — |
 | Delete all drafts and owned images after confirmation | `/stash-clear` | — |
 
 `/stash <draft>` persists its argument without reading or clearing current
@@ -64,6 +65,11 @@ Restore requires an empty editor and removes the entry; bare `/stash-restore`
 and `/stash-pop` both restore the newest entry. Drop and confirmed clear
 queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
 other Pi sessions for same scope first.
+
+Startup warns when any legacy stash scope conflicts with current data;
+`/stash-migrate` sweeps every legacy scope — migrating clean ones, quarantining
+conflicts as `*.migrate-conflict` files, and listing files that failed for
+manual review or deletion.
 
 The overlay supports configured navigation and confirmation keys, typing to
 filter, preview, `F5` refresh, and `d` to drop.

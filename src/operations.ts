@@ -11,6 +11,7 @@ import {
 	type MutationIntent,
 } from "./intents.ts";
 import { CommittedMutationError } from "./lock.ts";
+import { migrateAllLegacyStashes } from "./migrate.ts";
 import { StashOverlayComponent } from "./overlay.ts";
 import { type StashPaths, scopeLabel } from "./paths.ts";
 import { removePrivateDirectory, syncPrivateDirectory } from "./private-fs.ts";
@@ -35,6 +36,13 @@ const DIRECTORY_SYNC_FAILED_MESSAGE = "storage directory sync failed";
 const ROLLBACK_FAILED_MESSAGE = "stash persistence and staged-asset rollback both failed";
 const INTENT_ROLLBACK_FAILED_MESSAGE = "stash operation and recovery-intent rollback both failed";
 const INTENT_FINALIZE_FAILED_MESSAGE = "failed to finalize crash-recovery intent";
+const MIGRATION_SUMMARY_MESSAGE =
+	"Stash migration: migrated {migrated}, quarantined {quarantined} legacy conflicts, skipped {skipped}";
+const MIGRATION_QUARANTINE_MESSAGE =
+	"Conflicting legacy stashes kept as *.migrate-conflict; delete them once obsolete";
+const MIGRATION_SKIPPED_GUIDANCE_MESSAGE =
+	"Review or delete these legacy files, then rerun /stash-migrate";
+const MAX_SKIPPED_FILES_LISTED = 3;
 
 export type StashUi = PiUi;
 export type { StashOverlayTui };
@@ -202,6 +210,39 @@ export async function doAssetCleanup(
 		`Asset cleanup: removed ${report.removed}, retained ${lifecycle.retained.length}, removal failed ${report.removalFailed}, acknowledgement failed ${report.acknowledgementFailed}`,
 		report.removalFailed > 0 || report.acknowledgementFailed > 0 ? "error" : "info",
 	);
+}
+
+export async function doMigrateAll(
+	target: StashTarget,
+	legacyBaseDir: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const { ui, paths } = target;
+	if (signal?.aborted) return;
+	const summary = await migrateAllLegacyStashes(path.dirname(paths.stashFile), legacyBaseDir);
+	if (signal?.aborted) return;
+	safeNotify(
+		ui,
+		MIGRATION_SUMMARY_MESSAGE.replace("{migrated}", String(summary.migrated))
+			.replace("{quarantined}", String(summary.quarantined))
+			.replace("{skipped}", String(summary.skipped.length)),
+		summary.skipped.length > 0 ? "warning" : "info",
+	);
+	if (summary.quarantined > 0) {
+		safeNotify(ui, MIGRATION_QUARANTINE_MESSAGE, "warning");
+	}
+	if (summary.skipped.length > 0) {
+		const listed = summary.skipped
+			.slice(0, MAX_SKIPPED_FILES_LISTED)
+			.map(({ file, reason }) => `${file} (${reason})`)
+			.join("; ");
+		const more = summary.skipped.length - MAX_SKIPPED_FILES_LISTED;
+		safeNotify(
+			ui,
+			`Skipped ${summary.skipped.length} legacy migration${summary.skipped.length === 1 ? "" : "s"}: ${listed}${more > 0 ? ` and ${more} more` : ""}. ${MIGRATION_SKIPPED_GUIDANCE_MESSAGE}`,
+			"warning",
+		);
+	}
 }
 
 export async function doStash(

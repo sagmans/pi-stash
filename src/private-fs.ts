@@ -5,7 +5,7 @@
 // permission repair and reads bound to the object that was inspected.
 
 import { constants, type Stats } from "node:fs";
-import { type FileHandle, link, lstat, mkdir, open, rm, unlink } from "node:fs/promises";
+import { type FileHandle, link, lstat, mkdir, open, rename, rm, unlink } from "node:fs/promises";
 import path from "node:path";
 
 export const PRIVATE_DIR_MODE = 0o700;
@@ -138,6 +138,41 @@ export async function quarantinePrivateFile(
 		}
 	}
 	throw new Error(`unable to reserve quarantine path for ${filePath}`);
+}
+
+// Directories cannot be hard-linked, so quarantine renames after validating the
+// inode before and after the move; a swapped directory lands under the
+// quarantine label where it stays inspectable instead of being followed.
+export async function quarantinePrivateDirectory(
+	directory: string,
+	label: string,
+): Promise<string | undefined> {
+	let before: Stats;
+	try {
+		before = await lstat(directory);
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return undefined;
+		throw error;
+	}
+	assertDirectory(before, label);
+	assertCurrentUserOwns(before, label);
+	for (let attempt = 0; attempt < MAX_QUARANTINE_ATTEMPTS; attempt += 1) {
+		const candidate = `${directory}.${label}${attempt === 0 ? "" : `-${attempt}`}`;
+		try {
+			await rename(directory, candidate);
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) return undefined;
+			if (hasErrorCode(error, "EEXIST")) continue;
+			throw error;
+		}
+		const moved = await lstat(candidate);
+		if (moved.dev === before.dev && moved.ino === before.ino) {
+			await syncPrivateDirectory(path.dirname(directory));
+			return candidate;
+		}
+		throw new Error(`${label} changed during quarantine`);
+	}
+	throw new Error(`unable to reserve quarantine path for ${directory}`);
 }
 
 export async function removePrivateDirectory(

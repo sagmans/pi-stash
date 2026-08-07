@@ -3,12 +3,13 @@
 import { DEFAULT_STASH_CONFIG, loadStashConfig, type StashConfig } from "./config.ts";
 import { type ExtensionAPI, formatKeyText, type PiUi } from "./host.ts";
 import { reconcileMutationIntents } from "./intents.ts";
-import { legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
+import { findLegacyMigrationConflicts, legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import {
 	clearStashWidget,
 	doAssetCleanup,
 	doClear,
 	doDrop,
+	doMigrateAll,
 	doRestore,
 	doStash,
 	drainAssetCleanup,
@@ -32,6 +33,7 @@ export {
 	doAssetCleanup,
 	doClear,
 	doDrop,
+	doMigrateAll,
 	doRestore,
 	doStash,
 	drainAssetCleanup,
@@ -41,6 +43,8 @@ export {
 
 const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
 const STASH_USAGE_MESSAGE = "Usage: /stash <draft>";
+const LEGACY_CONFLICT_HINT_MESSAGE =
+	"{count} legacy stash conflict{plural} found; run /stash-migrate to migrate or quarantine them from a directory where pi-stash is available";
 
 type ActiveSession = {
 	cwd: string;
@@ -127,6 +131,7 @@ function registerStashCommands(
 		active: ActiveSession,
 		operation: (signal: AbortSignal) => Promise<void>,
 	) => Promise<void>,
+	legacyBaseDir: string,
 ): void {
 	pi.registerCommand("stash", {
 		description: "Stash the draft supplied after the command without changing the editor",
@@ -179,6 +184,14 @@ function registerStashCommands(
 			const session = resolve(ctx);
 			if (!session) return;
 			await enqueue(session, (signal) => doAssetCleanup(session, undefined, signal));
+		},
+	});
+	pi.registerCommand("stash-migrate", {
+		description: "Migrate every legacy stash scope, quarantining conflicting legacy files",
+		handler: async (_args, ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => doMigrateAll(session, legacyBaseDir, signal));
 		},
 	});
 	pi.registerCommand("stash-clear", {
@@ -261,11 +274,25 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		try {
 			// Newer data must block every migration and recovery mutation.
 			store = await loadStashStore(paths);
-			const didMigrate = await migrateLegacyStash(
-				ctx.cwd,
-				baseDir,
-				options.legacyBaseDir ?? legacyStashBaseDir(),
-			);
+			const legacyBaseDir = options.legacyBaseDir ?? legacyStashBaseDir();
+			// Advisory sweep hint: other scopes may hold legacy stashes that
+			// collide with current data and will need the user's decision.
+			try {
+				const conflicts = await findLegacyMigrationConflicts(baseDir, legacyBaseDir);
+				if (conflicts.length > 0) {
+					safeNotify(
+						ctx.ui,
+						LEGACY_CONFLICT_HINT_MESSAGE.replace("{count}", String(conflicts.length)).replace(
+							"{plural}",
+							conflicts.length === 1 ? "" : "s",
+						),
+						"warning",
+					);
+				}
+			} catch {
+				// The hint is advisory; a scan failure must not block startup.
+			}
+			const didMigrate = await migrateLegacyStash(ctx.cwd, baseDir, legacyBaseDir);
 			if (didMigrate) {
 				safeNotify(
 					ctx.ui,
@@ -311,7 +338,12 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		if (closing) await closeActiveSession(closing);
 	});
 
-	registerStashCommands(pi, requireActiveForCommand, enqueue);
+	registerStashCommands(
+		pi,
+		requireActiveForCommand,
+		enqueue,
+		options.legacyBaseDir ?? legacyStashBaseDir(),
+	);
 	registerStashShortcuts(pi, config, requireActiveForCommand, enqueue);
 }
 

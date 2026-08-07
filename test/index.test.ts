@@ -32,7 +32,7 @@ import {
 	type StashUi,
 } from "../src/operations.ts";
 import type { StashOverlayComponent } from "../src/overlay.ts";
-import { resolveStashPaths } from "../src/paths.ts";
+import { resolveLegacyStashPaths, resolveStashPaths } from "../src/paths.ts";
 import { removePrivateDirectory as removeAssetDir } from "../src/private-fs.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION, writeStashFile } from "../src/store.ts";
 
@@ -63,6 +63,7 @@ const STASH_COMMAND_NAMES = [
 	"stash-pop",
 	"stash-drop",
 	"stash-cleanup",
+	"stash-migrate",
 	"stash-clear",
 ] as const;
 
@@ -1170,6 +1171,10 @@ test("registered commands execute the documented stash workflows", async () => {
 	await commands.get("stash")?.handler("clear through command", ctx);
 	await commands.get("stash-clear")?.handler("", ctx);
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
+
+	await commands.get("stash")?.handler("migrate through command", ctx);
+	await commands.get("stash-migrate")?.handler("", ctx);
+	assert.ok(ui.notifs.at(-1)?.message.startsWith("Stash migration: migrated"));
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 
@@ -1183,12 +1188,13 @@ test("command help states selectors, editor prerequisites, and destructive effec
 	assert.match(commands.get("stash-pop")?.description ?? "", /newest.*editor/iu);
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
 	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
+	assert.match(commands.get("stash-migrate")?.description ?? "", /legacy.*quarantin/iu);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);
 });
 
 test("omp-shaped sessions without a mode field execute stash commands", async () => {
 	const { pi, handlers, commands } = extensionHarness();
-	installPiStash(pi, { isTerminal: true });
+	installPiStash(pi, { isTerminal: true, legacyBaseDir: path.join(baseDir, "legacy") });
 	const ui = fakeUi({ editorText: "unrelated omp editor draft" });
 	// omp's ExtensionContext exposes cwd/hasUI/ui but omits the mode field.
 	const ctx = { cwd: "/omp-contract", hasUI: true, ui };
@@ -1371,6 +1377,95 @@ test("unsupported schema stays unavailable across startup and every command", as
 	}
 });
 
+test("startup surfaces a migration conflict with file paths and removal guidance", async () => {
+	const { pi, handlers } = extensionHarness();
+	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "pi-stash") });
+	const ui = fakeUi();
+	const ctx = { cwd: "/conflict-scope", mode: "tui", hasUI: true, ui };
+	const base = path.join(baseDir, "pi-stash");
+	const destination = resolveStashPaths(ctx.cwd, base);
+	const legacy = resolveLegacyStashPaths(ctx.cwd, base);
+	mkdirSync(base, { recursive: true });
+	const currentFile = {
+		schemaVersion: STASH_SCHEMA_VERSION,
+		cwd: destination.sanitized,
+		createdAt: 1,
+		updatedAt: 1,
+		entries: [{ id: "current-entry", text: "current draft", createdAt: 1 }],
+		restoredAssetLeases: [],
+		pendingAssetCleanup: [],
+	};
+	writeFileSync(destination.stashFile, JSON.stringify(currentFile), { mode: 0o600 });
+	writeFileSync(
+		legacy.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: legacy.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [{ id: "legacy-entry", text: "legacy draft", createdAt: 1 }],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	const reason = ui.notifs.at(-1)?.message ?? "";
+	assert.ok(reason.includes("pi-stash unavailable"), reason);
+	assert.ok(reason.includes(legacy.stashFile), reason);
+	assert.ok(reason.includes(destination.stashFile), reason);
+	assert.match(reason, /remove/i);
+	assert.match(reason, /reload/i);
+	assert.equal(readFileSync(destination.stashFile, "utf8"), JSON.stringify(currentFile));
+	assert.equal(existsSync(legacy.stashFile), true);
+});
+
+test("startup hints /stash-migrate when any legacy scope conflicts", async () => {
+	const { pi, handlers } = extensionHarness();
+	const legacyBaseDir = path.join(baseDir, "legacy");
+	installPiStash(pi, { legacyBaseDir });
+	const conflicted = resolveLegacyStashPaths("/conflicted/scope", legacyBaseDir);
+	mkdirSync(legacyBaseDir, { recursive: true });
+	writeFileSync(
+		conflicted.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: conflicted.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+	const destination = resolveStashPaths("/conflicted/scope", path.join(baseDir, "pi-stash"));
+	mkdirSync(path.dirname(destination.stashFile), { recursive: true });
+	writeFileSync(
+		destination.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: destination.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	const ui = fakeUi();
+	const ctx = { cwd: "/clean/scope", mode: "tui", hasUI: true, ui };
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+
+	const hint = ui.notifs.find(({ message }) => message.includes("/stash-migrate"));
+	assert.ok(hint, JSON.stringify(ui.notifs));
+	assert.match(hint?.message ?? "", /1 legacy stash conflict/);
+});
+
 test("an unsupported session cannot leak the previous scope's unavailable reason", async () => {
 	const { pi, handlers, commands } = extensionHarness();
 	const unavailableCwd = "/future-then-unsupported";
@@ -1386,7 +1481,7 @@ test("an unsupported session cannot leak the previous scope's unavailable reason
 			entries: [],
 		}),
 	);
-	installPiStash(pi);
+	installPiStash(pi, { legacyBaseDir: path.join(baseDir, "legacy") });
 	const unavailableUi = fakeUi();
 	await handlers.get("session_start")?.(
 		{},

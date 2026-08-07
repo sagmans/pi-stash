@@ -12,7 +12,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { migrateLegacyStash } from "../src/migrate.ts";
+import {
+	findLegacyMigrationConflicts,
+	migrateAllLegacyStashes,
+	migrateLegacyStash,
+} from "../src/migrate.ts";
 import { resolveLegacyStashPaths, resolveStashPaths } from "../src/paths.ts";
 import { loadStashStore, STASH_SCHEMA_VERSION } from "../src/store.ts";
 import type { StashEntry, StashFile } from "../src/types.ts";
@@ -146,7 +150,14 @@ test("migrateLegacyStash rejects a destination conflict without overwriting eith
 
 	await assert.rejects(
 		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
-		/destination.*legacy stash/i,
+		(error) => {
+			assert.ok(error instanceof Error);
+			assert.ok(error.message.includes(legacy.stashFile));
+			assert.ok(error.message.includes(destination.stashFile));
+			assert.match(error.message, /remove/i);
+			assert.match(error.message, /reload/i);
+			return true;
+		},
 	);
 	assert.equal(readFileSync(destination.stashFile, "utf8"), "destination");
 	assert.equal(existsSync(legacy.stashFile), true);
@@ -387,4 +398,98 @@ test("migrateLegacyStash rejects a v1-key file whose recorded cwd disagrees", as
 	);
 	assert.equal(existsSync(legacy.stashFile), true);
 	assert.equal(existsSync(resolveStashPaths(CWD, destinationBase).stashFile), false);
+});
+
+test("migrateAllLegacyStashes sweeps v1-key and legacy-root v2-key scopes", async () => {
+	const v1Entry: LegacyV1Entry = { id: ACTIVE_ID, text: "v1 sweep", createdAt: CREATED_AT };
+	const v1 = writeLegacyV1([v1Entry]);
+	const otherCwd = "/other/scope";
+	const v2Legacy = resolveStashPaths(otherCwd, legacyBase);
+	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
+	writeFileSync(
+		v2Legacy.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: v2Legacy.sanitized,
+			createdAt: CREATED_AT,
+			updatedAt: CREATED_AT,
+			entries: [{ id: PENDING_ID, text: "v2 sweep", createdAt: CREATED_AT }],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase);
+
+	assert.deepEqual(summary, { migrated: 2, quarantined: 0, skipped: [] });
+	assert.equal(existsSync(v1.stashFile), false);
+	assert.equal(existsSync(v2Legacy.stashFile), false);
+	assert.equal((await loadStashStore(resolveStashPaths(CWD, destinationBase))).entryCount, 1);
+	assert.equal((await loadStashStore(resolveStashPaths(otherCwd, destinationBase))).entryCount, 1);
+});
+
+test("migrateAllLegacyStashes quarantines same-root conflicts and keeps v2 state", async () => {
+	const v1 = writeLegacyV1([{ id: ACTIVE_ID, text: "superseded", createdAt: CREATED_AT }]);
+	writeAsset(v1, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, legacyBase);
+	await (await loadStashStore(destination)).add({ text: "authoritative" });
+
+	const summary = await migrateAllLegacyStashes(legacyBase, legacyBase);
+
+	assert.deepEqual(summary, { migrated: 0, quarantined: 1, skipped: [] });
+	assert.equal(existsSync(v1.stashFile), false);
+	assert.equal(existsSync(`${v1.stashFile}.migrate-conflict`), true);
+	assert.equal(existsSync(`${v1.assetsRoot}.migrate-conflict`), true);
+	assert.equal(existsSync(destination.stashFile), true);
+	assert.equal((await loadStashStore(destination)).entries[0]?.text, "authoritative");
+});
+
+test("migrateAllLegacyStashes skips malformed, unrelated, and marker files", async () => {
+	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
+	const malformed = path.join(legacyBase, "--malformed--scope.json");
+	writeFileSync(malformed, "{ not json", { mode: 0o600 });
+	const marker = path.join(legacyBase, "v2--marker--scope.json.migration.json");
+	writeFileSync(marker, "{}", { mode: 0o600 });
+	const unrelated = path.join(legacyBase, "notes.txt");
+	writeFileSync(unrelated, "ignored", { mode: 0o600 });
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase);
+
+	assert.deepEqual(summary.skipped, [
+		{ file: malformed, reason: "malformed legacy stash cannot be migrated" },
+	]);
+	assert.equal(summary.migrated, 0);
+	assert.equal(summary.quarantined, 0);
+	assert.equal(existsSync(malformed), true);
+	assert.equal(existsSync(marker), true);
+	assert.equal(existsSync(unrelated), true);
+});
+
+test("migrateAllLegacyStashes tolerates an absent legacy root", async () => {
+	const summary = await migrateAllLegacyStashes(destinationBase, path.join(scratch, "missing"));
+	assert.deepEqual(summary, { migrated: 0, quarantined: 0, skipped: [] });
+});
+
+test("findLegacyMigrationConflicts reports only scopes with existing destinations", async () => {
+	const conflicting = writeLegacyV1([{ id: ACTIVE_ID, text: "old", createdAt: CREATED_AT }]);
+	const destination = resolveStashPaths(CWD, legacyBase);
+	await (await loadStashStore(destination)).add({ text: "current" });
+	const cleanScope = resolveLegacyStashPaths("/clean/scope", legacyBase);
+	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
+	writeFileSync(
+		cleanScope.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: cleanScope.sanitized,
+			createdAt: CREATED_AT,
+			updatedAt: CREATED_AT,
+			entries: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	const conflicts = await findLegacyMigrationConflicts(legacyBase, legacyBase);
+
+	assert.deepEqual(conflicts, [conflicting.stashFile]);
 });
