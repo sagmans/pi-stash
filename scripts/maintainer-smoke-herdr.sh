@@ -8,7 +8,7 @@ readonly PANE_RATIO="0.5"
 readonly PROCESS_EXIT_GRACE_SECONDS="1"
 readonly PRIVATE_DIR_MODE="700"
 readonly PRIVATE_FILE_MODE="600"
-readonly STASH_SHORTCUT="ctrl+shift+s"
+readonly STASH_SHORTCUT="ctrl+shift+h"
 readonly SMOKE_CANARY="PI_STASH_SMOKE_DRAFT_7E4A9C2D"
 
 package_input="${1:-}"
@@ -177,7 +177,7 @@ close_pane || fail "first Pi launch left a live process"
 create_pane restore
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "second Pi launch did not load packaged commands"
-herdr pane run "$pane_id" "/stash-restore" >/dev/null
+herdr pane run "$pane_id" "/stash-pop" >/dev/null
 herdr pane wait-output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
