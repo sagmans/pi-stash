@@ -23,16 +23,15 @@ npm run smoke:herdr -- /path/to/package.tgz  # smoke an exact CI artifact
 npm pack --dry-run   # inspect exact public package contents
 ```
 
-`npm run verify:ci` is the authoritative maintainer gate and runs against source
-in every CI matrix leg: Ubuntu and macOS on Node 22.19.0 and 24. `npm run verify`
-is its deterministic offline subset. Tagged release builds one npm artifact;
-each leg runs source verification, then installs and checks that artifact's
-entry point. Publication waits for aggregate matrix success. Failed, cancelled,
-skipped, or timed-out legs block publication; inspect package job and every
-expanded matrix leg before rerunning workflow. Herdr smoke remains outside
-hosted CI; download its `npm-package` artifact and pass `.tgz` to smoke on a
-Herdr maintainer host for packaged behavioral evidence. See
-[maintainer smoke test](maintainer-smoke.md).
+`npm run verify:ci` is the authoritative maintainer gate and hosted CI runs it
+on Ubuntu with Node 24. `npm run verify` is its deterministic offline subset.
+Tagged releases build one npm artifact, run source verification, then install
+and check that artifact's entry point on the same hosted platform. Publication
+waits for package and verification success. Failed, cancelled, skipped, or
+timed-out jobs block publication; inspect both jobs before rerunning a workflow.
+Herdr smoke remains outside hosted CI; download its `npm-package` artifact and
+pass `.tgz` to smoke on a Herdr maintainer host for packaged behavioral evidence.
+See [maintainer smoke test](maintainer-smoke.md).
 
 Do not hide audit output or weaken its severity threshold. Keep the development
 graph limited to extension runtime imports; any upstream finding requires a

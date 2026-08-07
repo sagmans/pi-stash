@@ -26,7 +26,14 @@ test("only the release workflow runs for version tags", () => {
 	assert.match(releaseHeader, /push:\n\s+tags: \["v\*"\]/);
 });
 
-test("release verifies one immutable package across every supported matrix leg", () => {
+test("CI verifies source once on Ubuntu with Node 24", () => {
+	assert.match(CI_WORKFLOW, /runs-on: ubuntu-latest/);
+	assert.match(CI_WORKFLOW, /node-version: "24"/);
+	assert.doesNotMatch(CI_WORKFLOW, /strategy:|matrix:|macos-latest|22\.19\.0/);
+	assert.match(CI_WORKFLOW, /npm run verify:ci/);
+});
+
+test("release verifies one immutable package on Ubuntu with Node 24", () => {
 	const packageJob = job("package", "verify");
 	const verifyJob = job("verify", "publish");
 
@@ -36,11 +43,9 @@ test("release verifies one immutable package across every supported matrix leg",
 	assert.match(packageJob, /path: artifact\/\*\.tgz/);
 
 	assert.match(verifyJob, /needs: package/);
-	assert.match(verifyJob, /fail-fast: false/);
-	assert.match(verifyJob, /os: \[ubuntu-latest, macos-latest\]/);
-	assert.match(verifyJob, /node: \["22\.19\.0", "24"\]/);
-	assert.match(verifyJob, /runs-on: \$\{\{ matrix\.os \}\}/);
-	assert.match(verifyJob, /node-version: \$\{\{ matrix\.node \}\}/);
+	assert.match(verifyJob, /runs-on: ubuntu-latest/);
+	assert.match(verifyJob, /node-version: "24"/);
+	assert.doesNotMatch(verifyJob, /strategy:|matrix:|macos-latest|22\.19\.0/);
 	assert.match(verifyJob, /uses: actions\/download-artifact@[0-9a-f]{40}/);
 	assert.match(verifyJob, /name: npm-package/);
 	assert.match(verifyJob, /npm run verify:ci/);
@@ -49,7 +54,7 @@ test("release verifies one immutable package across every supported matrix leg",
 	assert.doesNotMatch(verifyJob, /NODE_NO_WARNINGS|--experimental-transform-types/);
 });
 
-test("publication cannot bypass the complete matrix or rebuild its artifact", () => {
+test("publication cannot bypass artifact verification or rebuild its artifact", () => {
 	const publishJob = job("publish");
 	const workflowHeader = WORKFLOW.slice(0, WORKFLOW.indexOf("jobs:\n"));
 

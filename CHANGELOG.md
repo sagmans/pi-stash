@@ -8,6 +8,10 @@ All notable changes to this project are documented here. This format follows
 
 ## [0.1.1] - 2026-08-07
 
+### Changed
+
+- Run hosted source and release verification once on Ubuntu with Node 24 while retaining the documented runtime support contract.
+
 ### Fixed
 
 - Discover and migrate historical unprefixed stash keys, including same-root upgrades, so existing drafts remain visible.

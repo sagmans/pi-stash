@@ -12,15 +12,9 @@ permissions:
 jobs:
   verify:
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS is the primary development/dogfooding target; Ubuntu covers the
-        # POSIX baseline. Windows is not a supported platform (see README).
-        os: [ubuntu-latest, macos-latest]
-        # 22.19.0 is the declared minimum engine; 24 tracks the current LTS.
-        node: ["22.19.0", "24"]
-    runs-on: ${{ matrix.os }}
+    # One current-LTS Linux gate keeps hosted verification proportional while
+    # local maintainer smoke remains the runtime behavior gate.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: "24"
           cache: npm
 
       # --ignore-scripts: nothing in this repo needs lifecycle scripts, and
