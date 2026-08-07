@@ -1264,7 +1264,7 @@ test("session startup shows the configured list shortcut in the stash widget", a
 
 	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
 
-	assert.ok(ui.widgets.get("pi-stash")?.[0]?.includes("ctrl+shift+r to open"));
+	assert.ok(ui.widgets.get("pi-stash")?.[0]?.includes("ctrl+option+r to open"));
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 });
 

@@ -47,8 +47,8 @@ divergent behavior through the bug channel.
 | Action | Command | Default shortcut |
 | --- | --- | --- |
 | Stash supplied command text | `/stash <draft>` | — |
-| Stash current editor draft | — | `Ctrl+Shift+H` |
-| List drafts | `/stash-list` | `Ctrl+Shift+R` |
+| Stash current editor draft | — | `Ctrl+Alt+H` |
+| List drafts | `/stash-list` | `Ctrl+Alt+R` |
 | Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
 | Pop newest entry into the editor | `/stash-pop` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
@@ -83,8 +83,8 @@ Override either native shortcut in
 ```json
 {
   "keybindings": {
-    "stash": "ctrl+shift+h",
-    "list": "ctrl+shift+r"
+    "stash": "ctrl+alt+h",
+    "list": "ctrl+alt+r"
   }
 }
 ```
