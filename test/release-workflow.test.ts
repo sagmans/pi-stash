@@ -67,6 +67,7 @@ test("publication cannot bypass artifact verification or rebuild its artifact", 
 	assert.match(publishJob, /environment: npm-release/);
 	assert.match(publishJob, /permissions:\n\s+contents: read\n\s+id-token: write/);
 	assert.match(publishJob, /registry-url: "https:\/\/registry\.npmjs\.org"/);
+	assert.match(publishJob, /package="\$PWD\/\$1"/);
 	assert.match(publishJob, /npm publish "\$package" --provenance --access public/);
 	assert.doesNotMatch(publishJob, /actions\/checkout|NPM_TOKEN|NODE_AUTH_TOKEN|secrets\./);
 	assert.doesNotMatch(publishJob, /npm pack|npm run|continue-on-error:|if:\s*\$\{\{\s*always\(\)/);

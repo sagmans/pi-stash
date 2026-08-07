@@ -1,6 +1,6 @@
 {
 	"name": "@sagmans/pi-stash",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Persistent worktree-scoped editor draft stashes for pi",
 	"license": "MIT",
 	"files": [

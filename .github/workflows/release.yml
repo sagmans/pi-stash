@@ -101,5 +101,5 @@ jobs:
         run: |
           set -- artifact/*.tgz
           test "$#" -eq 1 && test -f "$1"
-          package="$1"
+          package="$PWD/$1"
           npm publish "$package" --provenance --access public
