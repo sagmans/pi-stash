@@ -60,6 +60,11 @@ function createPi(commandPath = EXPECTED_EXTENSION) {
 				sourceInfo: { path: commandPath },
 			},
 			{
+				name: "stash-pop",
+				source: "extension",
+				sourceInfo: { path: commandPath },
+			},
+			{
 				name: "stash-cleanup",
 				source: "extension",
 				sourceInfo: { path: commandPath },

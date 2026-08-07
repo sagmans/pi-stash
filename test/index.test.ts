@@ -60,6 +60,7 @@ const STASH_COMMAND_NAMES = [
 	"stash",
 	"stash-list",
 	"stash-restore",
+	"stash-pop",
 	"stash-drop",
 	"stash-cleanup",
 	"stash-clear",
@@ -1147,6 +1148,14 @@ test("registered commands execute the documented stash workflows", async () => {
 	assert.equal((await loadStashStore(paths)).entryCount, 0);
 
 	ui.editorText = "";
+	await commands.get("stash")?.handler("pop through command", ctx);
+	await commands.get("stash-pop")?.handler("", ctx);
+	assert.equal(ui.editorText, "pop through command");
+	assert.equal((await loadStashStore(paths)).entryCount, 0);
+	await commands.get("stash-pop")?.handler("", ctx);
+	assert.ok(ui.notifs.at(-1)?.message.includes("No stashed drafts"));
+
+	ui.editorText = "";
 	await commands.get("stash")?.handler("drop through command", ctx);
 	await commands.get("stash-drop")?.handler("missing", ctx);
 	assert.ok(ui.notifs.at(-1)?.message.includes('No stash entry matching "missing"'));
@@ -1171,6 +1180,7 @@ test("command help states selectors, editor prerequisites, and destructive effec
 	assert.match(commands.get("stash")?.description ?? "", /draft supplied.*without changing/iu);
 	assert.match(commands.get("stash-list")?.description ?? "", /search.*empty editor/iu);
 	assert.match(commands.get("stash-restore")?.description ?? "", /index-or-id.*empty editor/iu);
+	assert.match(commands.get("stash-pop")?.description ?? "", /newest.*editor/iu);
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
 	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);

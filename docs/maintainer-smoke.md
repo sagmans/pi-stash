@@ -39,7 +39,7 @@ The script:
    public extension entry point alongside a maintainer smoke driver.
 3. Opens a non-focused pane and launches Pi with one-run project trust, update
    checks, and telemetry disabled. The driver verifies `/stash`,
-   `/stash-restore`, and `/stash-cleanup` came from packaged entry point,
+   `/stash-restore`, `/stash-pop`, and `/stash-cleanup` came from packaged entry point,
    then Herdr sends default native stash shortcut with synthetic editor draft.
 4. Verifies the editor cleared and durable state owns one copied image, exits
    the first Pi process, and closes its pane.

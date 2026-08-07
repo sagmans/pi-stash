@@ -14,7 +14,7 @@ const STASH_TIMEOUT_MS = 15_000;
 // Pi notifications are transient: repeat markers so the Herdr-side watcher
 // cannot miss them between its own poll cycles.
 const MARKER_REPEAT_MS = 250;
-const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-cleanup"] as const;
+const REQUIRED_COMMANDS = ["stash", "stash-restore", "stash-pop", "stash-cleanup"] as const;
 
 type SmokeConfig = {
 	canary: string;

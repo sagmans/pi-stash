@@ -157,6 +157,14 @@ function registerStashCommands(
 			await enqueue(session, (signal) => doRestore(session, parseSelector(args), signal));
 		},
 	});
+	pi.registerCommand("stash-pop", {
+		description: "Pop the newest stash entry into an empty editor and remove it",
+		handler: async (_args, ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => doRestore(session, undefined, signal));
+		},
+	});
 	pi.registerCommand("stash-drop", {
 		description: "Permanently delete index-or-id (default newest) and its copied images",
 		handler: async (args, ctx) => {

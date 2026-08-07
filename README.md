@@ -50,6 +50,7 @@ divergent behavior through the bug channel.
 | Stash current editor draft | — | `Ctrl+Shift+H` |
 | List drafts | `/stash-list` | `Ctrl+Shift+R` |
 | Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
+| Pop newest entry into the editor | `/stash-pop` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
 | Delete all drafts and owned images after confirmation | `/stash-clear` | — |
@@ -59,7 +60,8 @@ editor. Bare `/stash` shows usage. Shortcut stash persists current editor and
 clears it only after successful persistence.
 
 Index `0` is newest. Selectors accept a displayed index or exact entry ID.
-Restore requires an empty editor and removes the entry. Drop and confirmed clear
+Restore requires an empty editor and removes the entry; bare `/stash-restore`
+and `/stash-pop` both restore the newest entry. Drop and confirmed clear
 queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
 other Pi sessions for same scope first.
 
