@@ -52,8 +52,8 @@ test("headerLine renders title, tally, and cwd", () => {
 	assert.ok(!headerLine(1, "x", theme).includes("drafts"));
 });
 
-test("footers mention restore and their mode-specific actions", () => {
-	assert.ok(listFooter(theme).includes("restore"));
+test("footers mention pop and their mode-specific actions", () => {
+	assert.ok(listFooter(theme).includes("pop"));
 	assert.ok(listFooter(theme).includes("filter"));
 	assert.ok(detailFooter(theme).includes("drop"));
 });
@@ -130,7 +130,7 @@ function harness(
 		entries,
 		"~/repo",
 		{
-			onRestore: (e) => calls.restore.push(e),
+			onPop: (e) => calls.restore.push(e),
 			onDrop: async (e) => {
 				calls.drop.push(e);
 				const dropped = await dropResult;
@@ -454,7 +454,7 @@ test("render draws a framed header and footer", () => {
 	const { overlay } = harness([entry("a", "alpha")]);
 	const rendered = overlay.render(60);
 	assert.ok(rendered.some((l) => l.includes("Stash")));
-	assert.ok(rendered.some((l) => l.includes("restore")));
+	assert.ok(rendered.some((l) => l.includes("pop")));
 });
 
 test("focus reaches the search input for IME cursor placement", () => {

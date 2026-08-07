@@ -17,12 +17,16 @@ import { type StashPaths, scopeLabel } from "./paths.ts";
 import { removePrivateDirectory, syncPrivateDirectory } from "./private-fs.ts";
 import type { RestoredAssetCleanup, StashStore } from "./store.ts";
 import { sanitizeTerminalText } from "./terminal.ts";
-import { createNewId, type ResolvedEntry, type StashEntry } from "./types.ts";
+import { createNewId, type ResolvedEntry, resolveBySelector, type StashEntry } from "./types.ts";
 import { themedWidgetLines } from "./widget.ts";
 
 const STASH_WIDGET_KEY = "pi-stash";
 const widgetOpenHints = new WeakMap<PiUi, string>();
-const RESTORE_BLOCKED_MESSAGE = "Clear or stash the current editor draft before restoring";
+const EDITOR_USE_BLOCKED_MESSAGE =
+	"Clear or stash the current editor draft before applying or popping";
+const APPLY_MISSING_MESSAGE = "No stashed drafts";
+const APPLY_SELECTED_MISSING_MESSAGE = 'No stash entry matching "{selector}"';
+const APPLY_SUCCESS_MESSAGE = "Applied [{index}]";
 const DROP_FAILED_MESSAGE = "Failed to drop stash entry";
 const REFRESH_FAILED_MESSAGE = "Failed to refresh stash";
 const CORRUPT_RECOVERY_MESSAGE = "Corrupt stash data was quarantined for recovery";
@@ -351,7 +355,7 @@ export async function openOverlay(
 				entries,
 				cwdLabel,
 				{
-					onRestore: (entry) => done(entry),
+					onPop: (entry) => done(entry),
 					onClose: () => done(undefined),
 					onDrop: async (entry) => {
 						let dropped: ResolvedEntry | undefined;
@@ -395,16 +399,39 @@ export async function openOverlay(
 	signal?.removeEventListener("abort", cancelOverlay ?? (() => {}));
 	await overlay?.settle();
 	if (!chosen || signal?.aborted) return;
-	await restoreEntry(target, chosen.id, "Stash entry vanished before restore", signal);
+	await popEntry(target, chosen.id, "Stash entry vanished before pop", signal);
 }
 
-function editorIsReadyForRestore(ui: PiUi): boolean {
+function editorIsReadyForStashUse(ui: PiUi): boolean {
 	if (ui.getEditorText().trim().length === 0) return true;
-	safeNotify(ui, RESTORE_BLOCKED_MESSAGE, "warning");
+	safeNotify(ui, EDITOR_USE_BLOCKED_MESSAGE, "warning");
 	return false;
 }
 
-async function restoreEntry(
+export async function doApply(
+	target: StashTarget,
+	selector?: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const { ui, store } = target;
+	await refreshVisibleStore(ui, store);
+	if (signal?.aborted || !editorIsReadyForStashUse(ui)) return;
+	const resolved = resolveBySelector(store.entries, selector);
+	if (!resolved) {
+		safeNotify(
+			ui,
+			selector
+				? APPLY_SELECTED_MISSING_MESSAGE.replace("{selector}", selector)
+				: APPLY_MISSING_MESSAGE,
+			"warning",
+		);
+		return;
+	}
+	ui.setEditorText(resolved.entry.text);
+	safeNotify(ui, APPLY_SUCCESS_MESSAGE.replace("{index}", String(resolved.index)), "info");
+}
+
+async function popEntry(
 	target: StashTarget,
 	selector: string | undefined,
 	missingMessage: string,
@@ -413,7 +440,7 @@ async function restoreEntry(
 	const { ui, store, paths } = target;
 	if (signal?.aborted) return;
 	let editorBlocked = false;
-	let restoredText: string | undefined;
+	let poppedText: string | undefined;
 	let intent: MutationIntent | undefined;
 	const priorText = ui.getEditorText();
 	let resolved: ResolvedEntry | undefined;
@@ -421,13 +448,13 @@ async function restoreEntry(
 	try {
 		resolved = await store.pop(selector, async (candidate) => {
 			if (signal?.aborted) return false;
-			if (!editorIsReadyForRestore(ui)) {
+			if (!editorIsReadyForStashUse(ui)) {
 				editorBlocked = true;
 				return false;
 			}
 			intent = await beginRestoreIntent(paths, candidate.entry);
-			restoredText = candidate.entry.text;
-			ui.setEditorText(restoredText);
+			poppedText = candidate.entry.text;
+			ui.setEditorText(poppedText);
 			return true;
 		});
 	} catch (error) {
@@ -436,7 +463,7 @@ async function restoreEntry(
 			resolved = committed.result;
 			committedFailure = committed;
 		} else {
-			if (restoredText !== undefined && ui.getEditorText() === restoredText) {
+			if (poppedText !== undefined && ui.getEditorText() === poppedText) {
 				ui.setEditorText(priorText);
 			}
 			if (intent) await completeIntentOrAggregate(intent, error);
@@ -459,7 +486,7 @@ async function restoreEntry(
 	}
 	if (signal?.aborted) return;
 	refreshWidget(ui, store);
-	const successMessage = `Restored [${resolved.index}]`;
+	const successMessage = `Popped [${resolved.index}]`;
 	const failure = committedFailure ? describeCommittedFailure(committedFailure) : undefined;
 	const reportedFailure =
 		failure ?? (intentFinalizeFailed ? INTENT_FINALIZE_FAILED_MESSAGE : undefined);
@@ -470,12 +497,12 @@ async function restoreEntry(
 	);
 }
 
-export async function doRestore(
+export async function doPop(
 	target: StashTarget,
 	selector?: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	await restoreEntry(
+	await popEntry(
 		target,
 		selector,
 		selector ? `No stash entry matching "${selector}"` : "No stashed drafts",

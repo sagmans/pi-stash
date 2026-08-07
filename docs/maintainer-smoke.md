@@ -39,16 +39,16 @@ The script:
 2. Extracts the supplied package, or packs the checkout, and loads only its
    public extension entry point alongside a maintainer smoke driver.
 3. Opens a non-focused pane and launches Pi with one-run project trust, update
-   checks, and telemetry disabled. The driver verifies `/stash`,
-   `/stash-restore`, `/stash-pop`, and `/stash-cleanup` came from packaged entry point,
-   then Herdr sends default native stash shortcut with synthetic editor draft.
+   checks, and telemetry disabled. The driver verifies the complete documented
+   slash-command surface came from the packaged entry point, then Herdr sends
+   the default native stash shortcut with a synthetic editor draft.
 4. Verifies the editor cleared and durable state owns one copied image, exits
    the first Pi process, and closes its pane.
 5. Starts a fresh pane and Pi process, invokes `/stash-migrate`, verifies the
    synthetic legacy source moved into configured storage, invokes `/stash-pop`,
    verifies the full draft reappears, clears the synthetic editor, invokes
-   `/stash-cleanup`, and confirms the entry, restored-image lease, cleanup queue,
-   and copied image are gone.
+   `/stash-cleanup-images`, and confirms the entry, popped-image lease, cleanup
+   queue, and copied image are gone.
 6. Fails on timeouts, warnings, extension errors, live created panes, malformed
    state, or residual disposable data. Raw pane output remains in memory and
    only one concise pass/fail line is printed.

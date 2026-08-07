@@ -3,14 +3,14 @@
 Persistent editor draft stashes for [pi](https://github.com/earendil-works/pi-coding-agent).
 
 `pi-stash` saves unsent editor text per exact working directory under the
-configured Pi agent directory's `pi-stash/` subtree, then restores it without
-submitting it to a model. Recognized temporary clipboard images are copied into
-private stash storage so restored references survive OS cleanup.
+configured Pi agent directory's `pi-stash/` subtree, then applies or pops it
+without submitting it to a model. Recognized temporary clipboard images are
+copied into private stash storage so later editor references survive OS cleanup.
 
 ## Features
 
-- Save and restore unsent drafts without submitting them to a model.
-- List, filter, preview, restore, drop, or clear newest-first entries.
+- Save, apply, or pop unsent drafts without submitting them to a model.
+- List, filter, preview, pop, drop, or clear newest-first entries.
 - Isolate storage by exact working directory, including linked worktrees.
 - Persist recognized temporary clipboard images; ignore other absolute paths.
 - Protect data with private permissions, atomic writes, locking, crash recovery, and corruption quarantine.
@@ -48,23 +48,30 @@ divergent behavior through the bug channel.
 | --- | --- | --- |
 | Stash supplied command text | `/stash <draft>` | — |
 | Stash current editor draft | — | `Ctrl+Alt+S` |
-| List drafts | `/stash-list` | `Ctrl+Alt+R` |
-| Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
-| Restore newest entry (command alias) | `/stash-pop` | — |
-| Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
-| Remove unreferenced restored images | `/stash-cleanup` | — |
-| Migrate legacy scopes whose identity is provable; report the rest | `/stash-migrate` | — |
+| Pop newest or selected entry into editor and remove it | `/stash-pop [index-or-id]` | — |
+| List drafts | `/stash-list` | `Ctrl+Alt+L` |
+| Delete newest or selected entry without using it | `/stash-drop [index-or-id]` | — |
+| Apply newest or selected entry into editor without removing it | `/stash-apply [index-or-id]` | — |
 | Delete all drafts and owned images after confirmation | `/stash-clear` | — |
+| Migrate legacy scopes whose identity is provable; report the rest | `/stash-migrate` | — |
+| Remove unreferenced images retained by earlier pops | `/stash-cleanup-images` | — |
 
 `/stash <draft>` persists its argument without reading or clearing current
 editor. Bare `/stash` shows usage. Shortcut stash persists current editor and
 clears it only after successful persistence.
 
 Index `0` is newest. Selectors accept a displayed index or exact entry ID.
-Restore requires an empty editor and removes the entry; bare `/stash-restore`
-and `/stash-pop` both restore the newest entry. Drop and confirmed clear
-queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
-other Pi sessions for same scope first.
+Apply and pop require an empty editor; omitted selectors use the newest entry.
+Apply keeps the entry, while pop removes it. The list overlay pops on confirmation
+and can also drop entries from preview. Drop and confirmed clear queue owned
+images for deletion.
+
+A popped draft can still reference images copied into private stash storage, so
+pi-stash retains those images after removing the entry. `/stash-cleanup-images`
+keeps retained images referenced by the current editor, deletes unreferenced
+ones, and retries failed image deletion. It never deletes draft text or stash
+entries. Close other Pi sessions for the same scope first because cleanup can
+inspect only the current editor.
 
 Startup migrates the current working directory from either historical key
 format because Pi supplies that scope's authoritative path. `/stash-migrate`
@@ -85,12 +92,12 @@ Override either native shortcut in
 {
   "keybindings": {
     "stash": "ctrl+alt+s",
-    "list": "ctrl+alt+r"
+    "list": "ctrl+alt+l"
   }
 }
 ```
 
-Missing file or keys use defaults. Unknown fields, malformed JSON, unsafe files,
+A missing override file falls back to the `config.json` shipped with the package; omitted keys fall back to that file's values. Unknown fields, malformed JSON, unsafe files,
 invalid shortcuts, and duplicate physical shortcuts fail extension loading.
 Run `/reload` after changing config.
 

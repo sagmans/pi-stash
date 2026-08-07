@@ -8,6 +8,17 @@ const IMAGE_PATH = "/tmp/pi-clipboard-00000000-0000-4000-8000-000000000001.png";
 const CANARY = "PI_STASH_SMOKE_DRAFT_7E4A9C2D";
 const STASH_READY_MARKER = "PI_STASH_SMOKE_STASH_READY";
 const CLEANUP_READY_MARKER = "PI_STASH_SMOKE_CLEANUP_READY";
+const RETIRED_COMMAND_NAME = "stash-restore";
+const EXPECTED_COMMAND_NAMES = [
+	"stash",
+	"stash-pop",
+	"stash-list",
+	"stash-drop",
+	"stash-apply",
+	"stash-clear",
+	"stash-migrate",
+	"stash-cleanup-images",
+] as const;
 
 type Listener = (payload?: unknown) => void;
 type SessionHandler = (event: unknown, context: unknown) => void | Promise<void>;
@@ -27,7 +38,7 @@ class FakeEvents {
 	}
 }
 
-function withSmokeEnvironment(phase: "stash" | "restore", run: () => Promise<void>): Promise<void> {
+function withSmokeEnvironment(phase: "stash" | "pop", run: () => Promise<void>): Promise<void> {
 	const original = { ...process.env };
 	Object.assign(process.env, {
 		PI_STASH_SMOKE_PHASE: phase,
@@ -43,33 +54,20 @@ function withSmokeEnvironment(phase: "stash" | "restore", run: () => Promise<voi
 	});
 }
 
-function createPi(commandPath = EXPECTED_EXTENSION) {
+function createPi(
+	commandPath = EXPECTED_EXTENSION,
+	commandNames: readonly string[] = EXPECTED_COMMAND_NAMES,
+) {
 	const events = new FakeEvents();
 	const handlers = new Map<string, SessionHandler>();
 	const pi = {
 		events,
-		getCommands: () => [
-			{
-				name: "stash",
+		getCommands: () =>
+			commandNames.map((name) => ({
+				name,
 				source: "extension",
 				sourceInfo: { path: commandPath },
-			},
-			{
-				name: "stash-restore",
-				source: "extension",
-				sourceInfo: { path: commandPath },
-			},
-			{
-				name: "stash-pop",
-				source: "extension",
-				sourceInfo: { path: commandPath },
-			},
-			{
-				name: "stash-cleanup",
-				source: "extension",
-				sourceInfo: { path: commandPath },
-			},
-		],
+			})),
 		on: (name: string, handler: SessionHandler) => {
 			handlers.set(name, handler);
 		},
@@ -106,8 +104,8 @@ test("smoke driver seeds a synthetic draft for native shortcut dispatch", async 
 	});
 });
 
-test("smoke driver clears the restored editor before packaged asset cleanup", async () => {
-	await withSmokeEnvironment("restore", async () => {
+test("smoke driver clears the popped editor before packaged image cleanup", async () => {
+	await withSmokeEnvironment("pop", async () => {
 		const { handlers } = createPi();
 		let editor = "";
 		const notifications: string[] = [];
@@ -135,8 +133,32 @@ test("smoke driver clears the restored editor before packaged asset cleanup", as
 });
 
 test("smoke driver fails closed when commands do not come from the packaged entry point", async () => {
-	await withSmokeEnvironment("restore", async () => {
+	await withSmokeEnvironment("pop", async () => {
 		const { handlers } = createPi("/tmp/checkout/index.ts");
+		const notifications: string[] = [];
+		await handlers.get("session_start")?.(
+			{},
+			{
+				mode: "tui",
+				hasUI: true,
+				ui: {
+					getEditorText: () => "",
+					setEditorText: () => {},
+					notify: (message: string) => notifications.push(message),
+				},
+			},
+		);
+
+		assert.deepEqual(notifications, ["PI_STASH_SMOKE_FAILED"]);
+	});
+});
+
+test("smoke driver rejects retired packaged commands outside the exact surface", async () => {
+	await withSmokeEnvironment("pop", async () => {
+		const { handlers } = createPi(EXPECTED_EXTENSION, [
+			...EXPECTED_COMMAND_NAMES,
+			RETIRED_COMMAND_NAME,
+		]);
 		const notifications: string[] = [];
 		await handlers.get("session_start")?.(
 			{},

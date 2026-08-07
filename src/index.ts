@@ -1,17 +1,18 @@
 // Pi extension session installation for worktree-scoped draft stashes.
 
-import { DEFAULT_STASH_CONFIG, loadStashConfig, type StashConfig } from "./config.ts";
+import { loadStashConfig, SHIPPED_STASH_CONFIG, type StashConfig } from "./config.ts";
 import { type ExtensionAPI, formatKeyText, type PiUi } from "./host.ts";
 import { reconcileMutationIntents } from "./intents.ts";
 import { findLegacyMigrationConflicts, legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
 import { AbortableOperationQueue } from "./operation-queue.ts";
 import {
 	clearStashWidget,
+	doApply,
 	doAssetCleanup,
 	doClear,
 	doDrop,
 	doMigrateAll,
-	doRestore,
+	doPop,
 	doStash,
 	drainAssetCleanup,
 	openOverlay,
@@ -31,18 +32,19 @@ export type {
 	StashUi,
 } from "./operations.ts";
 export {
+	doApply,
 	doAssetCleanup,
 	doClear,
 	doDrop,
 	doMigrateAll,
-	doRestore,
+	doPop,
 	doStash,
 	drainAssetCleanup,
 	openOverlay,
 	refreshWidget,
 } from "./operations.ts";
 
-const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
+const POP_RECOVERED_MESSAGE = "Recovered a pop interrupted before editor acknowledgement";
 const STASH_USAGE_MESSAGE = "Usage: /stash <draft>";
 const LEGACY_CONFLICT_HINT_MESSAGE =
 	"{count} legacy stash conflict{plural} found; run /stash-migrate to inspect {object}";
@@ -147,28 +149,20 @@ function registerStashCommands(
 			await enqueue(session, (signal) => doStash(session, draft, undefined, signal));
 		},
 	});
+	pi.registerCommand("stash-pop", {
+		description: "Pop index-or-id (default newest) into an empty editor and remove it",
+		handler: async (args, ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => doPop(session, parseSelector(args), signal));
+		},
+	});
 	pi.registerCommand("stash-list", {
-		description: "Search or preview stashes; restoring requires an empty editor",
+		description: "Search or preview stashes; popping requires an empty editor",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
 			await enqueue(session, (signal) => openOverlay(session, signal));
-		},
-	});
-	pi.registerCommand("stash-restore", {
-		description: "Restore index-or-id (default newest) into an empty editor and remove stash",
-		handler: async (args, ctx) => {
-			const session = resolve(ctx);
-			if (!session) return;
-			await enqueue(session, (signal) => doRestore(session, parseSelector(args), signal));
-		},
-	});
-	pi.registerCommand("stash-pop", {
-		description: "Restore the newest stash entry into an empty editor and remove it",
-		handler: async (_args, ctx) => {
-			const session = resolve(ctx);
-			if (!session) return;
-			await enqueue(session, (signal) => doRestore(session, undefined, signal));
 		},
 	});
 	pi.registerCommand("stash-drop", {
@@ -179,12 +173,20 @@ function registerStashCommands(
 			await enqueue(session, (signal) => doDrop(session, parseSelector(args), undefined, signal));
 		},
 	});
-	pi.registerCommand("stash-cleanup", {
-		description: "Delete unreferenced restored images; retain editor references",
+	pi.registerCommand("stash-apply", {
+		description: "Apply index-or-id (default newest) into an empty editor without removing it",
+		handler: async (args, ctx) => {
+			const session = resolve(ctx);
+			if (!session) return;
+			await enqueue(session, (signal) => doApply(session, parseSelector(args), signal));
+		},
+	});
+	pi.registerCommand("stash-clear", {
+		description: "Confirm, then permanently delete every stash and copied image",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueue(session, (signal) => doAssetCleanup(session, undefined, signal));
+			await enqueue(session, (signal) => doClear(session, undefined, signal));
 		},
 	});
 	pi.registerCommand("stash-migrate", {
@@ -209,12 +211,12 @@ function registerStashCommands(
 			}
 		},
 	});
-	pi.registerCommand("stash-clear", {
-		description: "Confirm, then permanently delete every stash and copied image",
+	pi.registerCommand("stash-cleanup-images", {
+		description: "Delete unreferenced images retained by pops; keep editor references",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
-			await enqueue(session, (signal) => doClear(session, undefined, signal));
+			await enqueue(session, (signal) => doAssetCleanup(session, undefined, signal));
 		},
 	});
 }
@@ -258,7 +260,7 @@ export type PiStashInstallOptions = {
 };
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
-	const config = options.config ?? DEFAULT_STASH_CONFIG;
+	const config = options.config ?? SHIPPED_STASH_CONFIG;
 	const baseDir = defaultStashBaseDir();
 	const legacyBaseDir = options.legacyBaseDir ?? legacyStashBaseDir();
 	let state: SessionState = { kind: "inactive" };
@@ -316,8 +318,8 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				);
 				store = await loadStashStore(paths);
 			}
-			const didRecoverRestore = await reconcileMutationIntents(paths, store);
-			if (didRecoverRestore) safeNotify(ctx.ui, RESTORE_RECOVERED_MESSAGE, "warning");
+			const didRecoverPop = await reconcileMutationIntents(paths, store);
+			if (didRecoverPop) safeNotify(ctx.ui, POP_RECOVERED_MESSAGE, "warning");
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : "unknown startup failure";
 			const reason = detail.startsWith("pi-stash unavailable:")

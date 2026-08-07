@@ -24,7 +24,7 @@ export type OverlayTheme = Pick<Theme, "fg" | "bold">;
 export type IndexedEntry = { entry: StashEntry; index: number };
 
 export type StashOverlayCallbacks = {
-	onRestore(entry: StashEntry): void;
+	onPop(entry: StashEntry): void;
 	onDrop(entry: StashEntry): Promise<boolean>;
 	onRefresh(): Promise<readonly StashEntry[]>;
 	onRefreshError(error: unknown): void;
@@ -80,7 +80,7 @@ export function listFooter(
 	const cancel = keyText("tui.select.cancel" as Keybinding, keybindings);
 	return theme.fg(
 		"dim",
-		` ${up}${down} move · ${confirm} restore · ${preview} preview · F5 refresh · type to filter · ${cancel} close`,
+		` ${up}${down} move · ${confirm} pop · ${preview} preview · F5 refresh · type to filter · ${cancel} close`,
 	);
 }
 
@@ -96,7 +96,7 @@ export function detailFooter(
 	const cancel = keyText("tui.select.cancel" as Keybinding, keybindings);
 	return theme.fg(
 		"dim",
-		` d drop · ${confirm} restore · ${up}${down} scroll · ${pageUp}/${pageDown} page · F5 refresh · Home/End bounds · ${cancel}/← back`,
+		` d drop · ${confirm} pop · ${up}${down} scroll · ${pageUp}/${pageDown} page · F5 refresh · Home/End bounds · ${cancel}/← back`,
 	);
 }
 
@@ -275,7 +275,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 			if (this.filtered.length) this.selected = this.selected === last ? 0 : this.selected + 1;
 		} else if (this.matches(data, "tui.select.confirm")) {
 			const selected = this.filtered[this.selected];
-			if (selected) this.callbacks.onRestore(selected.entry);
+			if (selected) this.callbacks.onPop(selected.entry);
 		} else if (this.matches(data, "tui.select.cancel")) {
 			this.callbacks.onClose();
 		} else if (this.matches(data, "tui.input.tab")) {
@@ -292,7 +292,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 		if (!detail) return;
 		const { item: current, preview } = detail;
 		if (this.matches(data, "tui.select.confirm")) {
-			this.callbacks.onRestore(current.entry);
+			this.callbacks.onPop(current.entry);
 		} else if (data === "d" && !this.dropInProgress) {
 			this.pendingDrop = this.dropCurrent(current);
 		} else if (this.matches(data, "tui.select.cancel") || matchesKey(data, "left")) {
@@ -427,7 +427,7 @@ export class StashOverlayComponent extends Container implements Focusable {
 			this.renderListBody();
 		} else {
 			// Preview controls live above the scroll viewport so max-height clipping
-			// cannot hide restore/drop guidance below a long draft.
+			// cannot hide pop/drop guidance below a long draft.
 			this.footerText.setText("");
 			this.renderDetailBody();
 		}

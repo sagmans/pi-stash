@@ -14,14 +14,12 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { matchesKey } from "@earendil-works/pi-tui";
 
-import {
-	DEFAULT_LIST_SHORTCUT,
-	DEFAULT_STASH_CONFIG,
-	DEFAULT_STASH_SHORTCUT,
-	loadStashConfig,
-	resolveStashConfigPath,
-} from "../src/config.ts";
+import { loadStashConfig, resolveStashConfigPath, SHIPPED_STASH_CONFIG } from "../src/config.ts";
 
+const EXPECTED_SHIPPED_SHORTCUTS = Object.freeze({
+	stash: "ctrl+alt+s",
+	list: "ctrl+alt+l",
+});
 const LEGACY_CTRL_ALT_S_SEQUENCE = "\x1b\x13";
 const TERMINAL_ALT_BACKSPACE_SHORTCUT = "alt+backspace";
 
@@ -45,23 +43,28 @@ function writeConfig(value: unknown): void {
 }
 
 test("loadStashConfig defaults omitted fields independently", async () => {
-	assert.deepEqual(await loadStashConfig(configPath), DEFAULT_STASH_CONFIG);
+	assert.deepEqual(SHIPPED_STASH_CONFIG.keybindings, EXPECTED_SHIPPED_SHORTCUTS);
+	assert.deepEqual(await loadStashConfig(configPath), SHIPPED_STASH_CONFIG);
 
 	writeConfig({});
-	assert.deepEqual(await loadStashConfig(configPath), {
-		keybindings: { stash: DEFAULT_STASH_SHORTCUT, list: DEFAULT_LIST_SHORTCUT },
-	});
+	assert.deepEqual(await loadStashConfig(configPath), SHIPPED_STASH_CONFIG);
 
 	writeConfig({ keybindings: { list: "alt+l" } });
 	assert.deepEqual(await loadStashConfig(configPath), {
-		keybindings: { stash: DEFAULT_STASH_SHORTCUT, list: "alt+l" },
+		keybindings: {
+			stash: SHIPPED_STASH_CONFIG.keybindings.stash,
+			list: "alt+l",
+		},
 	});
-	assert.equal(Object.isFrozen(DEFAULT_STASH_CONFIG), true);
-	assert.equal(Object.isFrozen(DEFAULT_STASH_CONFIG.keybindings), true);
+	assert.equal(Object.isFrozen(SHIPPED_STASH_CONFIG), true);
+	assert.equal(Object.isFrozen(SHIPPED_STASH_CONFIG.keybindings), true);
 });
 
 test("default stash shortcut does not alias terminal Alt+Backspace", () => {
-	assert.equal(matchesKey(LEGACY_CTRL_ALT_S_SEQUENCE, DEFAULT_STASH_SHORTCUT), true);
+	assert.equal(
+		matchesKey(LEGACY_CTRL_ALT_S_SEQUENCE, SHIPPED_STASH_CONFIG.keybindings.stash),
+		true,
+	);
 	assert.equal(matchesKey(LEGACY_CTRL_ALT_S_SEQUENCE, TERMINAL_ALT_BACKSPACE_SHORTCUT), false);
 });
 

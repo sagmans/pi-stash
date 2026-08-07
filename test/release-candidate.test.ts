@@ -66,6 +66,7 @@ test("candidate declares identical packaged Pi and Oh My Pi entry points", () =>
 	assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
 	assert.deepEqual(manifest.omp.extensions, manifest.pi.extensions);
 	assert.ok(manifest.files.includes("index.ts"));
+	assert.ok(manifest.files.includes("config.json"));
 });
 
 test("candidate version is consistent and appears once in release history", () => {
