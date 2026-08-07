@@ -4,6 +4,7 @@ import { DEFAULT_STASH_CONFIG, loadStashConfig, type StashConfig } from "./confi
 import { type ExtensionAPI, formatKeyText, type PiUi } from "./host.ts";
 import { reconcileMutationIntents } from "./intents.ts";
 import { findLegacyMigrationConflicts, legacyStashBaseDir, migrateLegacyStash } from "./migrate.ts";
+import { AbortableOperationQueue } from "./operation-queue.ts";
 import {
 	clearStashWidget,
 	doAssetCleanup,
@@ -44,7 +45,7 @@ export {
 const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
 const STASH_USAGE_MESSAGE = "Usage: /stash <draft>";
 const LEGACY_CONFLICT_HINT_MESSAGE =
-	"{count} legacy stash conflict{plural} found; run /stash-migrate to migrate or quarantine {object}";
+	"{count} legacy stash conflict{plural} found; run /stash-migrate to inspect {object}";
 const MIGRATION_RECHECK_MESSAGE =
 	"Migration done; restart pi or run /reload to re-check this directory";
 
@@ -53,14 +54,13 @@ type ActiveSession = {
 	ui: PiUi;
 	store: StashStore;
 	paths: StashPaths;
-	abort: AbortController;
-	pending: Promise<void>;
+	queue: AbortableOperationQueue;
 };
 
 type SessionState =
 	| { kind: "inactive" }
 	| { kind: "active"; session: ActiveSession }
-	| { kind: "unavailable"; reason: string; session?: ActiveSession };
+	| { kind: "unavailable"; cwd: string; reason: string; session?: ActiveSession };
 
 type ActiveResolver = (ctx: { ui: PiUi } | undefined) => ActiveSession | undefined;
 
@@ -99,7 +99,7 @@ function makeRequireActive(getState: () => SessionState): ActiveResolver {
 			if (ctx) safeNotify(ctx.ui, state.reason, "error");
 			return undefined;
 		}
-		if (state.kind === "inactive" || state.session.abort.signal.aborted) {
+		if (state.kind === "inactive" || state.session.queue.aborted) {
 			if (ctx) safeNotify(ctx.ui, "pi-stash is not ready yet", "warning");
 			return undefined;
 		}
@@ -112,18 +112,14 @@ function enqueueOperation(
 	operation: (signal: AbortSignal) => Promise<void>,
 	onUnavailable: (reason: string) => void,
 ): Promise<void> {
-	if (active.abort.signal.aborted) return Promise.resolve();
-	const pending = active.pending.then(async () => {
+	return active.queue.enqueue(async (signal) => {
 		try {
-			await operation(active.abort.signal);
+			await operation(signal);
 		} catch (error) {
 			if (!(error instanceof UnsupportedStashSchemaError)) throw error;
 			onUnavailable(error.message);
 		}
 	});
-	// A rejected command must not poison later queue settlement during shutdown.
-	active.pending = pending.catch(() => {});
-	return pending;
 }
 
 function registerStashCommands(
@@ -133,6 +129,7 @@ function registerStashCommands(
 		active: ActiveSession,
 		operation: (signal: AbortSignal) => Promise<void>,
 	) => Promise<void>,
+	enqueueMigration: (operation: (signal: AbortSignal) => Promise<void>) => Promise<void>,
 	legacyBaseDir: string,
 	getState: () => SessionState,
 	baseDir: string,
@@ -167,7 +164,7 @@ function registerStashCommands(
 		},
 	});
 	pi.registerCommand("stash-pop", {
-		description: "Pop the newest stash entry into an empty editor and remove it",
+		description: "Restore the newest stash entry into an empty editor and remove it",
 		handler: async (_args, ctx) => {
 			const session = resolve(ctx);
 			if (!session) return;
@@ -191,23 +188,25 @@ function registerStashCommands(
 		},
 	});
 	pi.registerCommand("stash-migrate", {
-		description: "Migrate every legacy stash scope, quarantining conflicting legacy files",
+		description: "Migrate safe legacy stash scopes and report conflicts for manual review",
 		handler: async (_args, ctx) => {
-			const state = getState();
-			if (state.kind === "inactive" || state.session?.abort.signal.aborted) {
+			const requestedState = getState();
+			if (requestedState.kind === "inactive" || requestedState.session?.queue.aborted) {
 				safeNotify(ctx.ui, "pi-stash is not ready yet", "warning");
 				return;
 			}
-			if (state.kind === "unavailable") {
-				// The sweep never reads the current store, so it can run even when
-				// this scope is unavailable — and may be the only way to unblock it.
-				await doMigrateAll(ctx.ui, baseDir, legacyBaseDir);
-				safeNotify(ctx.ui, MIGRATION_RECHECK_MESSAGE, "info");
-				return;
+			const cwd =
+				requestedState.kind === "active" ? requestedState.session.cwd : requestedState.cwd;
+			const migrate = () =>
+				enqueueMigration((signal) => doMigrateAll(ctx.ui, baseDir, legacyBaseDir, cwd, signal));
+			if (requestedState.kind === "active") {
+				await enqueue(requestedState.session, migrate);
+			} else {
+				await migrate();
 			}
-			await enqueue(state.session, (signal) =>
-				doMigrateAll(ctx.ui, baseDir, legacyBaseDir, signal),
-			);
+			if (getState() === requestedState && requestedState.kind === "unavailable") {
+				safeNotify(ctx.ui, MIGRATION_RECHECK_MESSAGE, "info");
+			}
 		},
 	});
 	pi.registerCommand("stash-clear", {
@@ -263,17 +262,17 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	const baseDir = defaultStashBaseDir();
 	const legacyBaseDir = options.legacyBaseDir ?? legacyStashBaseDir();
 	let state: SessionState = { kind: "inactive" };
+	let migrationQueue = new AbortableOperationQueue();
 
-	const closeActiveSession = async (closing: ActiveSession): Promise<void> => {
-		closing.abort.abort();
-		await closing.pending;
+	const closeSessionWork = async (closing?: ActiveSession): Promise<void> => {
+		await Promise.all([closing?.queue.close(), migrationQueue.close()]);
 		// Settlement precedes clearing so late work cannot leak across sessions.
-		clearStashWidget(closing.ui);
+		if (closing) clearStashWidget(closing.ui);
 	};
 	const requireActiveForCommand = makeRequireActive(() => state);
 	const markUnavailable = (active: ActiveSession, reason: string) => {
 		if (sessionFromState(state) !== active) return;
-		state = { kind: "unavailable", reason, session: active };
+		state = { kind: "unavailable", cwd: active.cwd, reason, session: active };
 		safeNotify(active.ui, reason, "error");
 		showUnavailable(active.ui, reason);
 	};
@@ -283,7 +282,8 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	pi.on("session_start", async (_event, ctx) => {
 		const replacing = sessionFromState(state);
 		state = { kind: "inactive" };
-		if (replacing) await closeActiveSession(replacing);
+		await closeSessionWork(replacing);
+		migrationQueue = new AbortableOperationQueue();
 		if (!isSupportedSession(ctx, options.isTerminal)) return;
 
 		const paths = resolveStashPaths(ctx.cwd, baseDir);
@@ -294,7 +294,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			// Advisory sweep hint: other scopes may hold legacy stashes that
 			// collide with current data and will need the user's decision.
 			try {
-				const conflicts = await findLegacyMigrationConflicts(baseDir, legacyBaseDir);
+				const conflicts = await findLegacyMigrationConflicts(baseDir, legacyBaseDir, ctx.cwd);
 				if (conflicts.length > 0) {
 					safeNotify(
 						ctx.ui,
@@ -323,7 +323,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 			const reason = detail.startsWith("pi-stash unavailable:")
 				? detail
 				: `pi-stash unavailable: ${detail}`;
-			state = { kind: "unavailable", reason };
+			state = { kind: "unavailable", cwd: ctx.cwd, reason };
 			safeNotify(ctx.ui, reason, "error");
 			if (error instanceof UnsupportedStashSchemaError) showUnavailable(ctx.ui, reason);
 			return;
@@ -332,8 +332,6 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		setWidgetOpenHint(ctx.ui, shortcutOpenHint(config.keybindings.list));
 		refreshWidget(ctx.ui, store);
 
-		const abort = new AbortController();
-
 		state = {
 			kind: "active",
 			session: {
@@ -341,8 +339,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				ui: ctx.ui,
 				store,
 				paths,
-				abort,
-				pending: Promise.resolve(),
+				queue: new AbortableOperationQueue(),
 			},
 		};
 	});
@@ -350,10 +347,18 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 	pi.on("session_shutdown", async () => {
 		const closing = sessionFromState(state);
 		state = { kind: "inactive" };
-		if (closing) await closeActiveSession(closing);
+		await closeSessionWork(closing);
 	});
 
-	registerStashCommands(pi, requireActiveForCommand, enqueue, legacyBaseDir, () => state, baseDir);
+	registerStashCommands(
+		pi,
+		requireActiveForCommand,
+		enqueue,
+		(operation) => migrationQueue.enqueue(operation),
+		legacyBaseDir,
+		() => state,
+		baseDir,
+	);
 	registerStashShortcuts(pi, config, requireActiveForCommand, enqueue);
 }
 

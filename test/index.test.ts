@@ -1188,7 +1188,7 @@ test("command help states selectors, editor prerequisites, and destructive effec
 	assert.match(commands.get("stash-pop")?.description ?? "", /newest.*editor/iu);
 	assert.match(commands.get("stash-drop")?.description ?? "", /permanently.*index-or-id/iu);
 	assert.match(commands.get("stash-cleanup")?.description ?? "", /unreferenced.*images/iu);
-	assert.match(commands.get("stash-migrate")?.description ?? "", /legacy.*quarantin/iu);
+	assert.match(commands.get("stash-migrate")?.description ?? "", /legacy.*manual review/iu);
 	assert.match(commands.get("stash-clear")?.description ?? "", /confirm.*every/iu);
 });
 
@@ -1429,7 +1429,7 @@ test("startup hints /stash-migrate when any legacy scope conflicts", async () =>
 	const { pi, handlers } = extensionHarness();
 	const legacyBaseDir = path.join(baseDir, "legacy");
 	installPiStash(pi, { legacyBaseDir });
-	const conflicted = resolveLegacyStashPaths("/conflicted/scope", legacyBaseDir);
+	const conflicted = resolveStashPaths("/conflicted/scope", legacyBaseDir);
 	mkdirSync(legacyBaseDir, { recursive: true });
 	writeFileSync(
 		conflicted.stashFile,
@@ -1469,7 +1469,7 @@ test("startup hints /stash-migrate when any legacy scope conflicts", async () =>
 	assert.match(hint?.message ?? "", /1 legacy stash conflict/);
 });
 
-test("an unavailable session runs /stash-migrate to quarantine its own conflict", async () => {
+test("an unavailable session runs /stash-migrate without moving conflicting state", async () => {
 	const { pi, handlers, commands } = extensionHarness();
 	const legacyBaseDir = path.join(baseDir, "legacy");
 	installPiStash(pi, { legacyBaseDir });
@@ -1514,10 +1514,10 @@ test("an unavailable session runs /stash-migrate to quarantine its own conflict"
 
 	await commands.get("stash-migrate")?.handler("", ctx);
 
-	assert.equal(existsSync(legacy.stashFile), false);
-	assert.equal(existsSync(`${legacy.stashFile}.migrate-conflict`), true);
+	assert.equal(existsSync(legacy.stashFile), true);
+	assert.equal(existsSync(`${legacy.stashFile}.migrate-conflict`), false);
 	assert.equal(existsSync(destination.stashFile), true);
-	assert.ok(ui.notifs.some(({ message }) => message.includes("quarantined 1 legacy conflicts")));
+	assert.ok(ui.notifs.some(({ message }) => message.includes("skipped 1 for manual review")));
 	assert.ok(
 		ui.notifs.at(-1)?.message?.includes("/reload") ?? false,
 		ui.notifs.at(-1)?.message ?? "",

@@ -6,7 +6,7 @@ import test from "node:test";
 const SMOKE_SCRIPT = path.resolve("scripts/maintainer-smoke-herdr.sh");
 const SCRIPT = readFileSync(SMOKE_SCRIPT, "utf8");
 
-test("Herdr smoke runs two packaged-extension launches without seeded stash state", () => {
+test("Herdr smoke runs two packaged-extension launches with isolated migration state", () => {
 	assert.match(SCRIPT, /package_input="\$\{1:-\}"/);
 	assert.match(SCRIPT, /package\/index\.ts/);
 	assert.match(SCRIPT, /scripts\/smoke\/driver\.ts/);
@@ -15,6 +15,9 @@ test("Herdr smoke runs two packaged-extension launches without seeded stash stat
 	assert.match(SCRIPT, /PI_STASH_SMOKE_STASH_READY/);
 	assert.match(SCRIPT, /PI_STASH_SMOKE_STASHED/);
 	assert.match(SCRIPT, /PI_STASH_SMOKE_RESTORE_READY/);
+	assert.match(SCRIPT, /MIGRATION_SCOPE_KEY="v2--pi-stash--smoke-migration"/);
+	assert.match(SCRIPT, /pane run "\$pane_id" "\/stash-migrate"/);
+	assert.match(SCRIPT, /Stash migration: migrated 1, skipped 0/);
 	assert.match(SCRIPT, /STASH_SHORTCUT="ctrl\+alt\+s"/);
 	assert.match(SCRIPT, /pane send-keys "\$pane_id" "\$STASH_SHORTCUT"/);
 	assert.doesNotMatch(SCRIPT, /config\.json/);

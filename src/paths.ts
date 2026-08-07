@@ -28,6 +28,8 @@ const BACKSLASH = "\\";
 const ESCAPED_BACKSLASH = "%5C";
 const HASH_ALGORITHM = "sha256";
 const HASH_LENGTH = 16;
+const MAX_UTF8_CHARACTER_BYTES = 4;
+const POSSIBLE_HASH_SUFFIX = new RegExp(`${SEPARATOR}[0-9a-f]{${HASH_LENGTH}}$`, "u");
 export function sanitizeCwd(cwd: string): string {
 	const segments = cwd.split("/").filter(Boolean).map(escapeSegment);
 	const sanitized = `${KEY_PREFIX}${segments.join(SEPARATOR)}`;
@@ -63,16 +65,20 @@ export function isSanitizedKey(key: string): "v1" | "v2" | undefined {
 	return undefined;
 }
 
-// Legacy stash files embed the flattened key as their cwd field, so a sweep
-// recovers the original cwd by inverting the sanitizer. Escaping is injective
-// below the truncation length, so the recomputed key matches the filename;
-// truncated long-path keys fail that check and are left alone.
-export function cwdFromSanitizedKey(key: string): string | undefined {
-	const prefix = isSanitizedKey(key);
-	if (!prefix) return undefined;
-	const body = key.slice(prefix === "v1" ? SEPARATOR.length : KEY_PREFIX.length);
-	if (body.length === 0) return undefined;
-	return `/${body.split(SEPARATOR).map(unescapeSegment).join("/")}`;
+// Global migration needs proof of scope identity. Historical v1 keys are
+// non-injective, while a max-length hash suffix can represent a truncated v2
+// key whose original cwd is unavailable; both must stay unresolved until Pi
+// supplies an authoritative cwd from that directory.
+export function cwdFromReversibleSanitizedKey(key: string): string | undefined {
+	if (isSanitizedKey(key) !== "v2" || couldBeTruncatedKey(key)) return undefined;
+	const body = key.slice(KEY_PREFIX.length);
+	const cwd = body.length === 0 ? "/" : `/${body.split(SEPARATOR).map(unescapeSegment).join("/")}`;
+	return sanitizeCwd(cwd) === key ? cwd : undefined;
+}
+
+function couldBeTruncatedKey(key: string): boolean {
+	const shortestTruncatedBytes = SANITIZE_MAX_LENGTH - (MAX_UTF8_CHARACTER_BYTES - 1);
+	return Buffer.byteLength(key) >= shortestTruncatedBytes && POSSIBLE_HASH_SUFFIX.test(key);
 }
 
 // The vendored predecessor keyed stashes without a version prefix and without

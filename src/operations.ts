@@ -37,11 +37,9 @@ const ROLLBACK_FAILED_MESSAGE = "stash persistence and staged-asset rollback bot
 const INTENT_ROLLBACK_FAILED_MESSAGE = "stash operation and recovery-intent rollback both failed";
 const INTENT_FINALIZE_FAILED_MESSAGE = "failed to finalize crash-recovery intent";
 const MIGRATION_SUMMARY_MESSAGE =
-	"Stash migration: migrated {migrated}, quarantined {quarantined} legacy conflicts, skipped {skipped}";
-const MIGRATION_QUARANTINE_MESSAGE =
-	"Conflicting legacy stashes kept as *.migrate-conflict; delete them once obsolete";
+	"Stash migration: migrated {migrated}, skipped {skipped} for manual review";
 const MIGRATION_SKIPPED_GUIDANCE_MESSAGE =
-	"Review or delete these legacy files, then rerun /stash-migrate";
+	"Exit Pi and review private backups of these files before changing them";
 const MAX_SKIPPED_FILES_LISTED = 3;
 
 export type StashUi = PiUi;
@@ -216,21 +214,23 @@ export async function doMigrateAll(
 	ui: PiUi,
 	destinationBaseDir: string,
 	legacyBaseDir: string,
+	authoritativeCwd: string,
 	signal?: AbortSignal,
 ): Promise<void> {
 	if (signal?.aborted) return;
-	const summary = await migrateAllLegacyStashes(destinationBaseDir, legacyBaseDir);
+	const summary = await migrateAllLegacyStashes(destinationBaseDir, legacyBaseDir, {
+		authoritativeCwd,
+		signal,
+	});
 	if (signal?.aborted) return;
 	safeNotify(
 		ui,
-		MIGRATION_SUMMARY_MESSAGE.replace("{migrated}", String(summary.migrated))
-			.replace("{quarantined}", String(summary.quarantined))
-			.replace("{skipped}", String(summary.skipped.length)),
+		MIGRATION_SUMMARY_MESSAGE.replace("{migrated}", String(summary.migrated)).replace(
+			"{skipped}",
+			String(summary.skipped.length),
+		),
 		summary.skipped.length > 0 ? "warning" : "info",
 	);
-	if (summary.quarantined > 0) {
-		safeNotify(ui, MIGRATION_QUARANTINE_MESSAGE, "warning");
-	}
 	if (summary.skipped.length > 0) {
 		const listed = summary.skipped
 			.slice(0, MAX_SKIPPED_FILES_LISTED)

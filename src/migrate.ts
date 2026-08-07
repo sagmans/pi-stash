@@ -1,9 +1,6 @@
-// One-scope migration from pi-stash's historical fixed home root to Pi's
-// configured agent root, covering both historical key formats (the current
-// v2-prefixed key and the vendored predecessor's unprefixed v1 key). A
-// private marker makes interrupted copies resumable; source data is removed
-// only after normalized state and every owned asset are verified at the
-// destination.
+// Legacy migration keeps scope identity explicit and source selection stable.
+// A private marker pins interrupted work so retries never choose a different
+// source after destination state has begun to change.
 
 import { constants } from "node:fs";
 import { link, lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
@@ -12,7 +9,7 @@ import path from "node:path";
 
 import { withStashFileLock } from "./lock.ts";
 import {
-	cwdFromSanitizedKey,
+	cwdFromReversibleSanitizedKey,
 	isSanitizedKey,
 	resolveLegacyStashPaths,
 	resolveStashPaths,
@@ -26,7 +23,6 @@ import {
 	PRIVATE_FILE_MODE,
 	type PrivateTextFile,
 	pathExists,
-	quarantinePrivateDirectory,
 	quarantinePrivateFile,
 	readPrivateTextFile,
 	removePrivateDirectory,
@@ -40,15 +36,46 @@ const MIGRATION_MARKER_VERSION = 1;
 const MIGRATION_SUFFIX = ".migration.json";
 const MIGRATION_TEMP_SUFFIX = ".migration-tmp";
 const MIGRATED_QUARANTINE_LABEL = "migrated";
-const MIGRATE_CONFLICT_LABEL = "migrate-conflict";
 const DESTINATION_CONFLICT_MESSAGE = "destination conflicts with legacy stash migration";
 const DESTINATION_CONFLICT_GUIDANCE =
-	'Run /stash-migrate to quarantine the legacy file, or keep the file holding the drafts you want and remove the other and its matching "-assets" directory; then restart pi or run /reload';
+	'Keep the file holding the drafts you want and remove the other and its matching "-assets" directory; then restart pi or run /reload';
 const MALFORMED_LEGACY_MESSAGE = "malformed legacy stash cannot be migrated";
 const MALFORMED_MARKER_MESSAGE = "malformed legacy migration marker";
 const MISSING_ASSETS_MESSAGE = "missing owned assets for active stash entry";
 const INTERRUPTED_MESSAGE = "simulated migration interruption";
+const V1_AUTHORITY_REQUIRED_MESSAGE =
+	"legacy v1 scope requires an authoritative current working directory";
+const IRREVERSIBLE_SCOPE_MESSAGE =
+	"scope key is not reversibly decodable; run migration from that working directory";
+const MULTIPLE_SOURCES_MESSAGE = "multiple legacy sources exist for one stash scope";
+const MARKER_PINNED_SOURCE_MESSAGE = "another legacy source is pinned by the migration marker";
+const NO_LEGACY_STATE_MESSAGE = "scope has no legacy state";
 const NO_FOLLOW_FLAG = constants.O_NOFOLLOW ?? 0;
+
+export type MigrationConflictPhase = "preflight" | "assets" | "destination";
+export type DestinationAuthority = "pre-existing" | "migration";
+
+export class MigrationConflictError extends Error {
+	readonly name = "MigrationConflictError";
+	readonly phase: MigrationConflictPhase;
+	readonly sourceStashFile: string;
+	readonly destinationStashFile: string;
+	readonly destinationAuthority: DestinationAuthority;
+
+	constructor(
+		message: string,
+		phase: MigrationConflictPhase,
+		sourceStashFile: string,
+		destinationStashFile: string,
+		destinationAuthority: DestinationAuthority,
+	) {
+		super(message);
+		this.phase = phase;
+		this.sourceStashFile = sourceStashFile;
+		this.destinationStashFile = destinationStashFile;
+		this.destinationAuthority = destinationAuthority;
+	}
+}
 
 type MigrationMarker = {
 	version: typeof MIGRATION_MARKER_VERSION;
@@ -64,6 +91,26 @@ type MigrationOptions = {
 	syncSourceParent?: (directory: string) => Promise<void>;
 };
 
+export type MigrationSweepOptions = MigrationOptions & {
+	authoritativeCwd?: string;
+	signal?: AbortSignal;
+};
+
+export type LegacyMigrationSummary = {
+	migrated: number;
+	skipped: Array<{ file: string; reason: string }>;
+};
+
+type MigrationPlan = {
+	source: StashPaths;
+	destination: StashPaths;
+};
+
+type MigrationDiscovery = {
+	plans: MigrationPlan[];
+	skipped: LegacyMigrationSummary["skipped"];
+};
+
 export function legacyStashBaseDir(homeDirectory: string = homedir()): string {
 	return path.join(homeDirectory, LEGACY_AGENT_SUBDIRECTORY);
 }
@@ -74,195 +121,296 @@ export async function migrateLegacyStash(
 	legacyBaseDir: string = legacyStashBaseDir(),
 	options: MigrationOptions = {},
 ): Promise<boolean> {
-	const destination = resolveStashPaths(cwd, destinationBaseDir);
-	const markerPath = `${destination.stashFile}${MIGRATION_SUFFIX}`;
-	const source = await resolveMigrationSource(
-		cwd,
-		legacyBaseDir,
-		destinationBaseDir,
-		destination,
-		markerPath,
-	);
-	if (!source) return false;
-	return withStashFileLock(source.stashFile, () =>
-		withStashFileLock(destination.stashFile, () => migrateLocked(source, destination, options)),
-	);
+	const plan = await planMigrationForCwd(cwd, destinationBaseDir, legacyBaseDir);
+	if (!plan) return false;
+	return migratePlan(plan, options);
 }
 
-export type LegacyMigrationSummary = {
-	migrated: number;
-	quarantined: number;
-	skipped: Array<{ file: string; reason: string }>;
-};
-
-// Sweep every legacy scope under the legacy root so one command unblocks all
-// directories, not just the current cwd. Conflicts quarantine the superseded
-// legacy state instead of failing, because choosing a winner for the user
-// could destroy drafts; the quarantine keeps the legacy bytes recoverable.
+// A sweep only accepts reversible v2 keys or the one v1 key backed by Pi's
+// current cwd. Unsafe inference is reported for manual, in-directory recovery.
 export async function migrateAllLegacyStashes(
 	destinationBaseDir: string,
 	legacyBaseDir: string = legacyStashBaseDir(),
+	options: MigrationSweepOptions = {},
 ): Promise<LegacyMigrationSummary> {
-	const summary: LegacyMigrationSummary = { migrated: 0, quarantined: 0, skipped: [] };
-	const sameRoot = path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir);
-	const scopes = await listLegacyScopeFiles(legacyBaseDir);
-	for (const filePath of scopes) {
-		const form = isSanitizedKey(path.basename(filePath, ".json"));
-		// Current-format files in a same-root sweep are destinations, not legacy.
-		if (!form || (sameRoot && form !== "v1")) continue;
-		const cwd = await scopeCwdForFile(filePath, sameRoot);
-		if (!cwd) {
-			summary.skipped.push({ file: filePath, reason: MALFORMED_LEGACY_MESSAGE });
-			continue;
-		}
+	const discovery = await discoverMigrationPlans(
+		destinationBaseDir,
+		legacyBaseDir,
+		options.authoritativeCwd,
+	);
+	const summary: LegacyMigrationSummary = {
+		migrated: 0,
+		skipped: [...discovery.skipped],
+	};
+	for (const plan of discovery.plans) {
+		if (options.signal?.aborted) break;
 		try {
-			const didMigrate = await migrateLegacyStash(cwd, destinationBaseDir, legacyBaseDir);
+			const didMigrate = await migratePlan(plan, options);
 			if (didMigrate) summary.migrated += 1;
-			else summary.skipped.push({ file: filePath, reason: "scope has no legacy state" });
+			else summary.skipped.push({ file: plan.source.stashFile, reason: NO_LEGACY_STATE_MESSAGE });
 		} catch (error) {
-			if (isDestinationConflict(error)) {
-				await quarantineLegacyConflict(cwd, legacyBaseDir, sameRoot);
-				summary.quarantined += 1;
-			} else {
-				summary.skipped.push({
-					file: filePath,
-					reason: error instanceof Error ? error.message : String(error),
-				});
-			}
+			summary.skipped.push({
+				file: plan.source.stashFile,
+				reason: describeError(error),
+			});
 		}
 	}
 	return summary;
 }
 
-// Startup check that only reports, never migrates: any legacy scope whose
-// destination already exists needs the user's decision, so surface a hint to
-// run the sweep command instead of silently failing one directory at a time.
+// Startup only needs actionable conflicts. It shares discovery with execution
+// so the hinted source is the exact source a later sweep will lock and use.
 export async function findLegacyMigrationConflicts(
 	destinationBaseDir: string,
 	legacyBaseDir: string = legacyStashBaseDir(),
+	authoritativeCwd?: string,
 ): Promise<string[]> {
-	const sameRoot = path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir);
+	const { plans } = await discoverMigrationPlans(
+		destinationBaseDir,
+		legacyBaseDir,
+		authoritativeCwd,
+	);
 	const conflicts: string[] = [];
-	for (const filePath of await listLegacyScopeFiles(legacyBaseDir)) {
-		const form = isSanitizedKey(path.basename(filePath, ".json"));
-		// Current-format files in a same-root sweep are destinations, not legacy.
-		if (!form || (sameRoot && form !== "v1")) continue;
-		const cwd = await scopeCwdForFile(filePath, sameRoot);
-		if (!cwd) continue;
-		const destination = resolveStashPaths(cwd, destinationBaseDir);
-		if ((await pathExists(destination.stashFile)) || (await pathExists(destination.assetsRoot))) {
-			conflicts.push(filePath);
+	for (const plan of plans) {
+		if (
+			(await pathExists(plan.destination.stashFile)) ||
+			(await pathExists(plan.destination.assetsRoot))
+		) {
+			conflicts.push(plan.source.stashFile);
 		}
 	}
 	return conflicts;
 }
 
-async function listLegacyScopeFiles(legacyBaseDir: string): Promise<string[]> {
-	let files: string[];
-	try {
-		files = await readdir(legacyBaseDir);
-	} catch (error) {
-		if (hasErrorCode(error, "ENOENT")) return [];
-		throw error;
+async function planMigrationForCwd(
+	cwd: string,
+	destinationBaseDir: string,
+	legacyBaseDir: string,
+): Promise<MigrationPlan | undefined> {
+	const destination = resolveStashPaths(cwd, destinationBaseDir);
+	const markerPath = markerPathFor(destination);
+	if (await pathExists(markerPath)) {
+		const marker = await readMarker(markerPath, destination);
+		return {
+			source: sourceFromMarker(cwd, marker, destinationBaseDir, legacyBaseDir),
+			destination,
+		};
 	}
-	return files
-		.filter((name) => name.endsWith(".json") && !name.endsWith(MIGRATION_SUFFIX))
-		.sort()
-		.map((name) => path.join(legacyBaseDir, name));
+
+	const candidates = migrationSourcesForCwd(cwd, destinationBaseDir, legacyBaseDir);
+	const existing: StashPaths[] = [];
+	for (const candidate of candidates) {
+		if (await pathExists(candidate.stashFile)) existing.push(candidate);
+	}
+	if (existing.length === 0) return undefined;
+	if (existing.length > 1) {
+		throw new Error(
+			`${MULTIPLE_SOURCES_MESSAGE}: ${existing.map(({ stashFile }) => stashFile).join(", ")}`,
+		);
+	}
+	return { source: existing[0] as StashPaths, destination };
 }
 
-// The stash file records the flattened key as its cwd, so the scope is
-// recovered by inverting the sanitizer. The filename must still match the key
-// derived from that cwd, or the file is not a legacy scope we may move.
-async function scopeCwdForFile(filePath: string, sameRoot: boolean): Promise<string | undefined> {
-	let text: PrivateTextFile;
-	try {
-		text = await readPrivateTextFile(filePath, "legacy stash file");
-	} catch {
-		return undefined;
+async function discoverMigrationPlans(
+	destinationBaseDir: string,
+	legacyBaseDir: string,
+	authoritativeCwd?: string,
+): Promise<MigrationDiscovery> {
+	const skipped: LegacyMigrationSummary["skipped"] = [];
+	const markerPins = await discoverMarkerPins(
+		destinationBaseDir,
+		legacyBaseDir,
+		authoritativeCwd,
+		skipped,
+	);
+	const candidates = await discoverSourceCandidates(
+		destinationBaseDir,
+		legacyBaseDir,
+		authoritativeCwd,
+		skipped,
+	);
+	const grouped = new Map<string, MigrationPlan[]>();
+	for (const candidate of candidates) {
+		const destinationFile = candidate.destination.stashFile;
+		const group = grouped.get(destinationFile) ?? [];
+		group.push(candidate);
+		grouped.set(destinationFile, group);
 	}
+
+	const plans: MigrationPlan[] = [];
+	const destinationFiles = new Set([...grouped.keys(), ...markerPins.keys()]);
+	for (const destinationFile of [...destinationFiles].sort()) {
+		const pin = markerPins.get(destinationFile);
+		const group = grouped.get(destinationFile) ?? [];
+		if (pin) {
+			plans.push(pin);
+			for (const candidate of group) {
+				if (candidate.source.stashFile !== pin.source.stashFile) {
+					skipped.push({ file: candidate.source.stashFile, reason: MARKER_PINNED_SOURCE_MESSAGE });
+				}
+			}
+			continue;
+		}
+		if (group.length === 1) {
+			plans.push(group[0] as MigrationPlan);
+			continue;
+		}
+		for (const candidate of group) {
+			skipped.push({ file: candidate.source.stashFile, reason: MULTIPLE_SOURCES_MESSAGE });
+		}
+	}
+	return { plans, skipped };
+}
+
+async function discoverMarkerPins(
+	destinationBaseDir: string,
+	legacyBaseDir: string,
+	authoritativeCwd: string | undefined,
+	skipped: LegacyMigrationSummary["skipped"],
+): Promise<Map<string, MigrationPlan>> {
+	const pins = new Map<string, MigrationPlan>();
+	for (const markerPath of await listMigrationMarkerFiles(destinationBaseDir)) {
+		try {
+			const destinationKeyWithExtension = path.basename(markerPath, MIGRATION_SUFFIX);
+			const destinationKey = path.basename(destinationKeyWithExtension, ".json");
+			const authoritativeDestination = authoritativeCwd
+				? resolveStashPaths(authoritativeCwd, destinationBaseDir)
+				: undefined;
+			const cwd =
+				authoritativeDestination && markerPathFor(authoritativeDestination) === markerPath
+					? authoritativeCwd
+					: cwdFromReversibleSanitizedKey(destinationKey);
+			if (!cwd) throw new Error(`${MALFORMED_MARKER_MESSAGE}: ${IRREVERSIBLE_SCOPE_MESSAGE}`);
+			const destination = resolveStashPaths(cwd, destinationBaseDir);
+			if (markerPathFor(destination) !== markerPath) {
+				throw new Error(`${MALFORMED_MARKER_MESSAGE}: scope mismatch`);
+			}
+			const marker = await readMarker(markerPath, destination);
+			pins.set(destination.stashFile, {
+				source: sourceFromMarker(cwd, marker, destinationBaseDir, legacyBaseDir),
+				destination,
+			});
+		} catch (error) {
+			skipped.push({ file: markerPath, reason: describeError(error) });
+		}
+	}
+	return pins;
+}
+
+async function discoverSourceCandidates(
+	destinationBaseDir: string,
+	legacyBaseDir: string,
+	authoritativeCwd: string | undefined,
+	skipped: LegacyMigrationSummary["skipped"],
+): Promise<MigrationPlan[]> {
+	const candidates: MigrationPlan[] = [];
+	const sameRoot = path.resolve(legacyBaseDir) === path.resolve(destinationBaseDir);
+	for (const filePath of await listLegacyScopeFiles(legacyBaseDir)) {
+		const key = path.basename(filePath, ".json");
+		const form = isSanitizedKey(key);
+		if (!form || (sameRoot && form === "v2")) continue;
+		try {
+			const cwd = await cwdForSourceFile(filePath, key, form, authoritativeCwd);
+			const source =
+				form === "v1"
+					? resolveLegacyStashPaths(cwd, legacyBaseDir)
+					: resolveStashPaths(cwd, legacyBaseDir);
+			if (source.stashFile !== filePath) throw new Error(MALFORMED_LEGACY_MESSAGE);
+			candidates.push({
+				source,
+				destination: resolveStashPaths(cwd, destinationBaseDir),
+			});
+		} catch (error) {
+			skipped.push({ file: filePath, reason: describeError(error) });
+		}
+	}
+	return candidates;
+}
+
+async function cwdForSourceFile(
+	filePath: string,
+	key: string,
+	form: "v1" | "v2",
+	authoritativeCwd?: string,
+): Promise<string> {
+	const text = await readPrivateTextFile(filePath, "legacy stash file");
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text.text);
 	} catch {
-		return undefined;
+		throw new Error(MALFORMED_LEGACY_MESSAGE);
 	}
-	if (!isRecord(raw) || typeof raw.cwd !== "string") return undefined;
-	const form = isSanitizedKey(raw.cwd);
-	if (!form || (sameRoot && form !== "v1") || raw.cwd !== path.basename(filePath, ".json")) {
-		return undefined;
-	}
-	const cwd = cwdFromSanitizedKey(raw.cwd);
-	if (!cwd) return undefined;
-	if (
-		form === "v1" &&
-		resolveLegacyStashPaths(cwd, path.dirname(filePath)).stashFile === filePath
-	) {
-		return cwd;
-	}
-	if (form === "v2" && resolveStashPaths(cwd, path.dirname(filePath)).stashFile === filePath) {
-		return cwd;
-	}
-	return undefined;
-}
-
-function isDestinationConflict(error: unknown): boolean {
-	return error instanceof Error && error.message.startsWith(DESTINATION_CONFLICT_MESSAGE);
-}
-
-// Superseded legacy state is preserved under a quarantine label instead of
-// deleted; the v2 destination stays authoritative for the scope. The source
-// candidate follows resolveMigrationSource: same-root upgrades can only have
-// v1-keyed sources, while a distinct legacy root may hold v2-keyed ones.
-async function quarantineLegacyConflict(
-	cwd: string,
-	legacyBaseDir: string,
-	sameRoot: boolean,
-): Promise<void> {
-	const candidates = sameRoot
-		? [resolveLegacyStashPaths(cwd, legacyBaseDir)]
-		: [resolveStashPaths(cwd, legacyBaseDir), resolveLegacyStashPaths(cwd, legacyBaseDir)];
-	let source: StashPaths | undefined;
-	for (const candidate of candidates) {
-		if (await pathExists(candidate.stashFile)) {
-			source = candidate;
-			break;
+	if (!isRecord(raw) || raw.cwd !== key) throw new Error(MALFORMED_LEGACY_MESSAGE);
+	if (form === "v1") {
+		if (!authoritativeCwd) throw new Error(V1_AUTHORITY_REQUIRED_MESSAGE);
+		if (resolveLegacyStashPaths(authoritativeCwd, path.dirname(filePath)).stashFile !== filePath) {
+			throw new Error(V1_AUTHORITY_REQUIRED_MESSAGE);
 		}
+		return authoritativeCwd;
 	}
-	if (!source) return;
-	const legacy = await readPrivateTextFile(source.stashFile, "legacy stash file");
-	await quarantinePrivateFile(source.stashFile, legacy.identity, MIGRATE_CONFLICT_LABEL);
-	await quarantinePrivateDirectory(source.assetsRoot, MIGRATE_CONFLICT_LABEL);
+	if (
+		authoritativeCwd &&
+		resolveStashPaths(authoritativeCwd, path.dirname(filePath)).stashFile === filePath
+	) {
+		return authoritativeCwd;
+	}
+	const cwd = cwdFromReversibleSanitizedKey(key);
+	if (!cwd) throw new Error(IRREVERSIBLE_SCOPE_MESSAGE);
+	return cwd;
 }
 
-// Two historical key formats can outlive an upgrade: the current v2-prefixed
-// key and the vendored predecessor's unprefixed v1 key. A same-root upgrade
-// only ever sources the v1 key, because the v2 key resolves to the
-// destination file itself.
-async function resolveMigrationSource(
+async function listLegacyScopeFiles(legacyBaseDir: string): Promise<string[]> {
+	return (await listDirectoryNames(legacyBaseDir))
+		.filter((name) => name.endsWith(".json") && !name.endsWith(MIGRATION_SUFFIX))
+		.map((name) => path.join(legacyBaseDir, name));
+}
+
+async function listMigrationMarkerFiles(destinationBaseDir: string): Promise<string[]> {
+	return (await listDirectoryNames(destinationBaseDir))
+		.filter((name) => name.endsWith(MIGRATION_SUFFIX))
+		.map((name) => path.join(destinationBaseDir, name));
+}
+
+async function listDirectoryNames(directory: string): Promise<string[]> {
+	try {
+		return (await readdir(directory)).sort();
+	} catch (error) {
+		if (hasErrorCode(error, "ENOENT")) return [];
+		throw error;
+	}
+}
+
+function migrationSourcesForCwd(
 	cwd: string,
-	legacyBaseDir: string,
 	destinationBaseDir: string,
-	destination: StashPaths,
-	markerPath: string,
-): Promise<StashPaths | undefined> {
+	legacyBaseDir: string,
+): StashPaths[] {
 	const candidates: StashPaths[] = [];
 	if (path.resolve(legacyBaseDir) !== path.resolve(destinationBaseDir)) {
 		candidates.push(resolveStashPaths(cwd, legacyBaseDir));
 	}
 	candidates.push(resolveLegacyStashPaths(cwd, legacyBaseDir));
-	if (!(await pathExists(markerPath))) {
-		for (const candidate of candidates) {
-			if (await pathExists(candidate.stashFile)) return candidate;
-		}
-		return undefined;
-	}
-	// An interrupted migration must resume from the exact source the marker
-	// recorded, or that scope's asset bookkeeping would be abandoned.
-	const marker = await readMarker(markerPath, destination);
-	const pinned = candidates.find((candidate) => candidate.stashFile === marker.sourceStashFile);
-	if (!pinned) throw new Error(`${MALFORMED_MARKER_MESSAGE}: scope mismatch`);
-	return pinned;
+	return candidates;
+}
+
+function sourceFromMarker(
+	cwd: string,
+	marker: MigrationMarker,
+	destinationBaseDir: string,
+	legacyBaseDir: string,
+): StashPaths {
+	const candidates = migrationSourcesForCwd(cwd, destinationBaseDir, legacyBaseDir);
+	const source = candidates.find(({ stashFile }) => stashFile === marker.sourceStashFile);
+	if (!source) throw new Error(`${MALFORMED_MARKER_MESSAGE}: source scope mismatch`);
+	return source;
+}
+
+async function migratePlan(plan: MigrationPlan, options: MigrationOptions): Promise<boolean> {
+	return withStashFileLock(plan.source.stashFile, () =>
+		withStashFileLock(plan.destination.stashFile, () =>
+			migrateLocked(plan.source, plan.destination, options),
+		),
+	);
 }
 
 async function migrateLocked(
@@ -270,21 +418,28 @@ async function migrateLocked(
 	destination: StashPaths,
 	options: MigrationOptions,
 ): Promise<boolean> {
-	const markerPath = `${destination.stashFile}${MIGRATION_SUFFIX}`;
+	const markerPath = markerPathFor(destination);
 	const markerExists = await pathExists(markerPath);
 	let marker: MigrationMarker;
 	let sourceFile: StashFile | undefined;
 
 	if (markerExists) {
 		marker = await readMarker(markerPath, destination);
+		if (marker.sourceStashFile !== source.stashFile) {
+			throw new Error(`${MALFORMED_MARKER_MESSAGE}: source scope mismatch`);
+		}
 		sourceFile = await readLegacyFileIfPresent(source);
 		if (sourceFile) assertMarkerMatchesFile(marker, sourceFile);
 	} else {
 		sourceFile = await readLegacyFileIfPresent(source);
 		if (!sourceFile) return false;
 		if ((await pathExists(destination.stashFile)) || (await pathExists(destination.assetsRoot))) {
-			throw new Error(
-				`${DESTINATION_CONFLICT_MESSAGE}: ${source.stashFile} and ${destination.stashFile} both exist for this directory. ${DESTINATION_CONFLICT_GUIDANCE}`,
+			throw migrationConflict(
+				"preflight",
+				source,
+				destination,
+				`${source.stashFile} and ${destination.stashFile} both exist for this directory`,
+				"pre-existing",
 			);
 		}
 		marker = markerFor(source, destination, sourceFile);
@@ -300,12 +455,23 @@ async function migrateLocked(
 
 	if (!(await pathExists(destination.stashFile))) {
 		if (!sourceFile) throw new Error(`${MALFORMED_LEGACY_MESSAGE}: source disappeared`);
-		await installPrivateTextFile(destination.stashFile, `${JSON.stringify(sourceFile, null, 2)}\n`);
+		try {
+			await installPrivateTextFile(
+				destination.stashFile,
+				`${JSON.stringify(sourceFile, null, 2)}\n`,
+			);
+		} catch (error) {
+			if (!hasErrorCode(error, "EEXIST")) throw error;
+		}
 	}
-	const committed = await readMigratedFile(destination.stashFile, destination.sanitized);
+	const committed = await readMigratedFile(source, destination);
 	if (sourceFile && !sameFile(committed, sourceFile)) {
-		throw new Error(
-			`${DESTINATION_CONFLICT_MESSAGE}: ${destination.stashFile} changed during migration and no longer matches ${source.stashFile}. ${DESTINATION_CONFLICT_GUIDANCE}`,
+		throw migrationConflict(
+			"destination",
+			source,
+			destination,
+			`${destination.stashFile} changed during migration and no longer matches ${source.stashFile}`,
+			"migration",
 		);
 	}
 	interruptAfter("destination", options);
@@ -314,6 +480,26 @@ async function migrateLocked(
 	await unlink(markerPath);
 	await syncPrivateDirectory(path.dirname(markerPath));
 	return true;
+}
+
+function markerPathFor(destination: StashPaths): string {
+	return `${destination.stashFile}${MIGRATION_SUFFIX}`;
+}
+
+function migrationConflict(
+	phase: MigrationConflictPhase,
+	source: StashPaths,
+	destination: StashPaths,
+	detail: string,
+	destinationAuthority: DestinationAuthority,
+): MigrationConflictError {
+	return new MigrationConflictError(
+		`${DESTINATION_CONFLICT_MESSAGE}: ${detail}. ${DESTINATION_CONFLICT_GUIDANCE}`,
+		phase,
+		source.stashFile,
+		destination.stashFile,
+		destinationAuthority,
+	);
 }
 
 function markerFor(source: StashPaths, destination: StashPaths, file: StashFile): MigrationMarker {
@@ -356,8 +542,8 @@ async function readMarker(markerPath: string, destination: StashPaths): Promise<
 	return raw;
 }
 
-// v1-keyed files embed the flattened cwd in the file itself; the destination
-// must record its own key so later loads can verify file-location coherence.
+// v1 state must be re-keyed because the destination loader verifies that file
+// identity and location agree before exposing drafts.
 function rekeyedForDestination(file: StashFile, destination: StashPaths): StashFile {
 	if (file.cwd === destination.sanitized) return file;
 	return { ...file, cwd: destination.sanitized };
@@ -441,7 +627,7 @@ async function copyOwnedAssets(
 		const sourceDirectory = source.assetDir(id);
 		const destinationDirectory = destination.assetDir(id);
 		if (await pathExists(sourceDirectory)) {
-			await copyAssetDirectory(sourceDirectory, destinationDirectory);
+			await copyAssetDirectory(source, destination, sourceDirectory, destinationDirectory);
 		}
 		if (marker.requiredAssetIds.includes(id) && !(await pathExists(destinationDirectory))) {
 			throw new Error(`${MISSING_ASSETS_MESSAGE} ${id}`);
@@ -449,31 +635,40 @@ async function copyOwnedAssets(
 	}
 }
 
-async function copyAssetDirectory(source: string, destination: string): Promise<void> {
-	await assertPrivateDirectory(source, "legacy asset directory");
-	await ensurePrivateDirectory(path.dirname(destination));
-	await ensurePrivateDirectory(destination);
-	const entries = await readdir(source, { withFileTypes: true });
+async function copyAssetDirectory(
+	source: StashPaths,
+	destination: StashPaths,
+	sourceDirectory: string,
+	destinationDirectory: string,
+): Promise<void> {
+	await assertPrivateDirectory(sourceDirectory, "legacy asset directory");
+	await ensurePrivateDirectory(path.dirname(destinationDirectory));
+	await ensurePrivateDirectory(destinationDirectory);
+	const entries = await readdir(sourceDirectory, { withFileTypes: true });
 	for (const entry of entries) {
 		if (!entry.isFile() || entry.isSymbolicLink()) {
 			throw new Error("legacy asset directory contains a non-regular file");
 		}
-		const sourceFile = path.join(source, entry.name);
-		const destinationFile = path.join(destination, entry.name);
+		const sourceFile = path.join(sourceDirectory, entry.name);
+		const destinationFile = path.join(destinationDirectory, entry.name);
 		const bytes = await readPrivateBytes(sourceFile, "legacy asset file");
 		if (await pathExists(destinationFile)) {
 			const existing = await readPrivateBytes(destinationFile, "migrated asset file");
 			if (!existing.equals(bytes)) {
-				throw new Error(
-					`${DESTINATION_CONFLICT_MESSAGE}: ${destinationFile} differs from legacy ${sourceFile}. ${DESTINATION_CONFLICT_GUIDANCE}`,
+				throw migrationConflict(
+					"assets",
+					source,
+					destination,
+					`${destinationFile} differs from legacy ${sourceFile}`,
+					"migration",
 				);
 			}
 		} else {
 			await writePrivateBytes(destinationFile, bytes);
 		}
 	}
-	await syncPrivateDirectory(destination, "migrated asset directory");
-	await syncPrivateDirectory(path.dirname(destination));
+	await syncPrivateDirectory(destinationDirectory, "migrated asset directory");
+	await syncPrivateDirectory(path.dirname(destinationDirectory));
 }
 
 async function readPrivateBytes(filePath: string, label: string): Promise<Buffer> {
@@ -518,20 +713,28 @@ async function installPrivateTextFile(filePath: string, text: string): Promise<v
 	}
 }
 
-async function readMigratedFile(filePath: string, cwdKey: string): Promise<StashFile> {
-	const text = (await readPrivateTextFile(filePath, "migrated stash file")).text;
+async function readMigratedFile(source: StashPaths, destination: StashPaths): Promise<StashFile> {
+	const text = (await readPrivateTextFile(destination.stashFile, "migrated stash file")).text;
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
 	} catch {
-		throw new Error(
-			`${DESTINATION_CONFLICT_MESSAGE}: ${filePath} is not a valid stash file for this scope. ${DESTINATION_CONFLICT_GUIDANCE}`,
+		throw migrationConflict(
+			"destination",
+			source,
+			destination,
+			`${destination.stashFile} is not a valid stash file for this scope`,
+			"migration",
 		);
 	}
 	const parsed = parseStashFile(raw);
-	if (!parsed || parsed.file.cwd !== cwdKey) {
-		throw new Error(
-			`${DESTINATION_CONFLICT_MESSAGE}: ${filePath} is not a valid stash file for this scope. ${DESTINATION_CONFLICT_GUIDANCE}`,
+	if (!parsed || parsed.file.cwd !== destination.sanitized) {
+		throw migrationConflict(
+			"destination",
+			source,
+			destination,
+			`${destination.stashFile} is not a valid stash file for this scope`,
+			"migration",
 		);
 	}
 	return parsed.file;
@@ -566,4 +769,8 @@ async function removeMigratedSource(
 
 function interruptAfter(stage: MigrationOptions["failAfter"], options: MigrationOptions): void {
 	if (options.failAfter === stage) throw new Error(INTERRUPTED_MESSAGE);
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

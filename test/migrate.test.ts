@@ -14,6 +14,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import {
 	findLegacyMigrationConflicts,
+	MigrationConflictError,
 	migrateAllLegacyStashes,
 	migrateLegacyStash,
 } from "../src/migrate.ts";
@@ -28,6 +29,12 @@ const PENDING_ID = "pending-entry";
 const UNRELATED_ID = "unrelated-entry";
 const ACTIVE_BYTES = Buffer.from("active image");
 const PENDING_BYTES = Buffer.from("pending image");
+const ROOT_CWD = "/";
+const COLLIDING_SEGMENT_CWD = "/a--b";
+const COLLIDING_PATH_CWD = "/a/b";
+const FIRST_SWEEP_CWD = "/a/scope";
+const SECOND_SWEEP_CWD = "/z/scope";
+const LONG_CWD = `/${"segment-".repeat(40)}`;
 
 let scratch: string;
 let legacyBase: string;
@@ -43,10 +50,14 @@ afterEach(() => {
 	rmSync(scratch, { recursive: true, force: true });
 });
 
-function stashFile(entries: StashEntry[] = [], pendingAssetCleanup: string[] = []): StashFile {
+function stashFile(
+	entries: StashEntry[] = [],
+	pendingAssetCleanup: string[] = [],
+	cwd = CWD,
+): StashFile {
 	return {
 		schemaVersion: STASH_SCHEMA_VERSION,
-		cwd: resolveStashPaths(CWD, legacyBase).sanitized,
+		cwd: resolveStashPaths(cwd, legacyBase).sanitized,
 		createdAt: CREATED_AT,
 		updatedAt: CREATED_AT,
 		entries,
@@ -55,13 +66,20 @@ function stashFile(entries: StashEntry[] = [], pendingAssetCleanup: string[] = [
 	};
 }
 
-function writeLegacy(file: StashFile | string): ReturnType<typeof resolveStashPaths> {
-	const paths = resolveStashPaths(CWD, legacyBase);
+function writeLegacyFor(
+	cwd: string,
+	file: StashFile | string,
+): ReturnType<typeof resolveStashPaths> {
+	const paths = resolveStashPaths(cwd, legacyBase);
 	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
 	writeFileSync(paths.stashFile, typeof file === "string" ? file : JSON.stringify(file), {
 		mode: 0o600,
 	});
 	return paths;
+}
+
+function writeLegacy(file: StashFile | string): ReturnType<typeof resolveStashPaths> {
+	return writeLegacyFor(CWD, file);
 }
 
 function writeAsset(paths: ReturnType<typeof resolveStashPaths>, id: string, bytes: Buffer): void {
@@ -151,11 +169,12 @@ test("migrateLegacyStash rejects a destination conflict without overwriting eith
 	await assert.rejects(
 		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
 		(error) => {
-			assert.ok(error instanceof Error);
-			assert.ok(error.message.includes(legacy.stashFile));
-			assert.ok(error.message.includes(destination.stashFile));
-			assert.match(error.message, /remove/i);
-			assert.match(error.message, /reload/i);
+			assert.ok(error instanceof MigrationConflictError);
+			assert.equal(error.phase, "preflight");
+			assert.equal(error.sourceStashFile, legacy.stashFile);
+			assert.equal(error.destinationStashFile, destination.stashFile);
+			assert.match(error.message, /remove/iu);
+			assert.match(error.message, /reload/iu);
 			return true;
 		},
 	);
@@ -420,29 +439,198 @@ test("migrateAllLegacyStashes sweeps v1-key and legacy-root v2-key scopes", asyn
 		{ mode: 0o600 },
 	);
 
-	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase);
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase, {
+		authoritativeCwd: CWD,
+	});
 
-	assert.deepEqual(summary, { migrated: 2, quarantined: 0, skipped: [] });
+	assert.deepEqual(summary, { migrated: 2, skipped: [] });
 	assert.equal(existsSync(v1.stashFile), false);
 	assert.equal(existsSync(v2Legacy.stashFile), false);
 	assert.equal((await loadStashStore(resolveStashPaths(CWD, destinationBase))).entryCount, 1);
 	assert.equal((await loadStashStore(resolveStashPaths(otherCwd, destinationBase))).entryCount, 1);
 });
 
-test("migrateAllLegacyStashes quarantines same-root conflicts and keeps v2 state", async () => {
+test("migrateAllLegacyStashes reports conflicts without moving either source", async () => {
 	const v1 = writeLegacyV1([{ id: ACTIVE_ID, text: "superseded", createdAt: CREATED_AT }]);
 	writeAsset(v1, ACTIVE_ID, ACTIVE_BYTES);
 	const destination = resolveStashPaths(CWD, legacyBase);
 	await (await loadStashStore(destination)).add({ text: "authoritative" });
 
-	const summary = await migrateAllLegacyStashes(legacyBase, legacyBase);
+	const summary = await migrateAllLegacyStashes(legacyBase, legacyBase, {
+		authoritativeCwd: CWD,
+	});
 
-	assert.deepEqual(summary, { migrated: 0, quarantined: 1, skipped: [] });
-	assert.equal(existsSync(v1.stashFile), false);
-	assert.equal(existsSync(`${v1.stashFile}.migrate-conflict`), true);
-	assert.equal(existsSync(`${v1.assetsRoot}.migrate-conflict`), true);
+	assert.equal(summary.migrated, 0);
+	assert.equal(summary.skipped.length, 1);
+	assert.match(summary.skipped[0]?.reason ?? "", /destination conflicts/iu);
+	assert.equal(existsSync(v1.stashFile), true);
+	assert.equal(existsSync(v1.assetsRoot), true);
 	assert.equal(existsSync(destination.stashFile), true);
 	assert.equal((await loadStashStore(destination)).entries[0]?.text, "authoritative");
+});
+
+test("migrateAllLegacyStashes leaves non-injective v1 keys for an authoritative cwd", async () => {
+	const colliding = resolveLegacyStashPaths(COLLIDING_SEGMENT_CWD, legacyBase);
+	assert.equal(
+		colliding.stashFile,
+		resolveLegacyStashPaths(COLLIDING_PATH_CWD, legacyBase).stashFile,
+	);
+	mkdirSync(legacyBase, { recursive: true, mode: 0o700 });
+	writeFileSync(
+		colliding.stashFile,
+		JSON.stringify({
+			schemaVersion: 1,
+			cwd: colliding.sanitized,
+			createdAt: CREATED_AT,
+			updatedAt: CREATED_AT,
+			entries: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase);
+
+	assert.equal(summary.migrated, 0);
+	assert.equal(summary.skipped.length, 1);
+	assert.match(summary.skipped[0]?.reason ?? "", /authoritative current working directory/iu);
+	assert.equal(existsSync(colliding.stashFile), true);
+	assert.equal(
+		existsSync(resolveStashPaths(COLLIDING_SEGMENT_CWD, destinationBase).stashFile),
+		false,
+	);
+	assert.equal(existsSync(resolveStashPaths(COLLIDING_PATH_CWD, destinationBase).stashFile), false);
+});
+
+test("migrateAllLegacyStashes migrates root but rejects truncated v2 scope keys", async () => {
+	const root = writeLegacyFor(ROOT_CWD, stashFile([], [], ROOT_CWD));
+	const truncated = writeLegacyFor(LONG_CWD, stashFile([], [], LONG_CWD));
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase);
+
+	assert.equal(summary.migrated, 1);
+	assert.equal(summary.skipped.length, 1);
+	assert.equal(summary.skipped[0]?.file, truncated.stashFile);
+	assert.match(summary.skipped[0]?.reason ?? "", /not reversibly decodable/iu);
+	assert.equal(existsSync(root.stashFile), false);
+	assert.equal(existsSync(truncated.stashFile), true);
+	assert.equal(existsSync(resolveStashPaths(ROOT_CWD, destinationBase).stashFile), true);
+});
+
+test("authoritative cwd resumes a marker whose v2 key was truncated", async () => {
+	const legacy = writeLegacyFor(LONG_CWD, stashFile([], [], LONG_CWD));
+	await assert.rejects(
+		() => migrateLegacyStash(LONG_CWD, destinationBase, legacyBase, { failAfter: "marker" }),
+		/simulated migration interruption/iu,
+	);
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase, {
+		authoritativeCwd: LONG_CWD,
+	});
+
+	assert.deepEqual(summary, { migrated: 1, skipped: [] });
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(resolveStashPaths(LONG_CWD, destinationBase).stashFile), true);
+});
+
+test("migration planning refuses competing v1 and v2 sources without a marker", async () => {
+	const v2 = writeLegacy(stashFile());
+	const v1 = writeLegacyV1();
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
+		/multiple legacy sources/iu,
+	);
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase, {
+		authoritativeCwd: CWD,
+	});
+
+	assert.equal(summary.migrated, 0);
+	assert.equal(summary.skipped.length, 2);
+	assert.ok(summary.skipped.every(({ reason }) => /multiple legacy sources/iu.test(reason)));
+	assert.equal(existsSync(v1.stashFile), true);
+	assert.equal(existsSync(v2.stashFile), true);
+});
+
+test("migration markers cannot redirect source access outside the configured legacy root", async () => {
+	const legacy = writeLegacy(stashFile());
+	const destination = resolveStashPaths(CWD, destinationBase);
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase, { failAfter: "marker" }),
+		/simulated migration interruption/iu,
+	);
+	const markerPath = `${destination.stashFile}.migration.json`;
+	const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+	const outside = resolveStashPaths(CWD, path.join(scratch, "outside"));
+	mkdirSync(path.dirname(outside.stashFile), { recursive: true, mode: 0o700 });
+	writeFileSync(outside.stashFile, JSON.stringify(stashFile()), { mode: 0o600 });
+	writeFileSync(markerPath, JSON.stringify({ ...marker, sourceStashFile: outside.stashFile }), {
+		mode: 0o600,
+	});
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
+		/source scope mismatch/iu,
+	);
+	assert.equal(existsSync(legacy.stashFile), true);
+	assert.equal(existsSync(outside.stashFile), true);
+});
+
+test("post-marker conflicts remain typed and never trigger source quarantine", async () => {
+	const entry: StashEntry = {
+		id: ACTIVE_ID,
+		text: "conflicting asset",
+		createdAt: CREATED_AT,
+		assetCount: 1,
+	};
+	const legacy = writeLegacy(stashFile([entry]));
+	writeAsset(legacy, ACTIVE_ID, ACTIVE_BYTES);
+	const destination = resolveStashPaths(CWD, destinationBase);
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase, { failAfter: "assets" }),
+		/simulated migration interruption/iu,
+	);
+	writeFileSync(path.join(destination.assetDir(ACTIVE_ID), "00-image.png"), PENDING_BYTES);
+
+	await assert.rejects(
+		() => migrateLegacyStash(CWD, destinationBase, legacyBase),
+		(error) => {
+			assert.ok(error instanceof MigrationConflictError);
+			assert.equal(error.phase, "assets");
+			return true;
+		},
+	);
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase, {
+		authoritativeCwd: CWD,
+	});
+
+	assert.equal(summary.migrated, 0);
+	assert.equal(summary.skipped.length, 1);
+	assert.equal(existsSync(legacy.stashFile), true);
+	assert.equal(
+		readdirSync(legacyBase).some((name) => name.includes("migrate-conflict")),
+		false,
+	);
+});
+
+test("migrateAllLegacyStashes stops between scopes when aborted", async () => {
+	const first = writeLegacyFor(
+		FIRST_SWEEP_CWD,
+		stashFile([{ id: ACTIVE_ID, text: "first", createdAt: CREATED_AT }], [], FIRST_SWEEP_CWD),
+	);
+	const second = writeLegacyFor(
+		SECOND_SWEEP_CWD,
+		stashFile([{ id: PENDING_ID, text: "second", createdAt: CREATED_AT }], [], SECOND_SWEEP_CWD),
+	);
+	const abort = new AbortController();
+
+	const summary = await migrateAllLegacyStashes(destinationBase, legacyBase, {
+		signal: abort.signal,
+		syncSourceParent: async () => abort.abort(),
+	});
+
+	assert.equal(summary.migrated, 1);
+	assert.equal(existsSync(first.stashFile), false);
+	assert.equal(existsSync(second.stashFile), true);
 });
 
 test("migrateAllLegacyStashes skips malformed, unrelated, and marker files", async () => {
@@ -460,7 +648,6 @@ test("migrateAllLegacyStashes skips malformed, unrelated, and marker files", asy
 		{ file: malformed, reason: "malformed legacy stash cannot be migrated" },
 	]);
 	assert.equal(summary.migrated, 0);
-	assert.equal(summary.quarantined, 0);
 	assert.equal(existsSync(malformed), true);
 	assert.equal(existsSync(marker), true);
 	assert.equal(existsSync(unrelated), true);
@@ -468,7 +655,7 @@ test("migrateAllLegacyStashes skips malformed, unrelated, and marker files", asy
 
 test("migrateAllLegacyStashes tolerates an absent legacy root", async () => {
 	const summary = await migrateAllLegacyStashes(destinationBase, path.join(scratch, "missing"));
-	assert.deepEqual(summary, { migrated: 0, quarantined: 0, skipped: [] });
+	assert.deepEqual(summary, { migrated: 0, skipped: [] });
 });
 
 test("findLegacyMigrationConflicts reports only scopes with existing destinations", async () => {
@@ -489,7 +676,7 @@ test("findLegacyMigrationConflicts reports only scopes with existing destination
 		{ mode: 0o600 },
 	);
 
-	const conflicts = await findLegacyMigrationConflicts(legacyBase, legacyBase);
+	const conflicts = await findLegacyMigrationConflicts(legacyBase, legacyBase, CWD);
 
 	assert.deepEqual(conflicts, [conflicting.stashFile]);
 });

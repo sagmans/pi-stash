@@ -10,6 +10,12 @@ readonly PRIVATE_DIR_MODE="700"
 readonly PRIVATE_FILE_MODE="600"
 readonly STASH_SHORTCUT="ctrl+alt+s"
 readonly SMOKE_CANARY="PI_STASH_SMOKE_DRAFT_7E4A9C2D"
+readonly MIGRATION_SCOPE_KEY="v2--pi-stash--smoke-migration"
+readonly MIGRATION_ENTRY_ID="migration-entry"
+readonly MIGRATION_DRAFT="PI_STASH_SMOKE_MIGRATION_4B8C1E6F"
+readonly MIGRATION_SCHEMA_VERSION="2"
+readonly MIGRATION_CREATED_AT="1700000000000"
+readonly MIGRATION_SUCCESS="Stash migration: migrated 1, skipped 0"
 
 package_input="${1:-}"
 smoke_root=""
@@ -174,9 +180,43 @@ process.stdout.write(filePath);
 ' "$stash_dir" "$SMOKE_CANARY" "$clipboard_image")" || fail "durable text and image stash state is invalid"
 close_pane || fail "first Pi launch left a live process"
 
+legacy_stash_dir="$smoke_home/.pi/agent/pi-stash"
+legacy_stash_file="$legacy_stash_dir/$MIGRATION_SCOPE_KEY.json"
+migrated_stash_file="$stash_dir/$MIGRATION_SCOPE_KEY.json"
+mkdir -p -- "$legacy_stash_dir"
+chmod "$PRIVATE_DIR_MODE" "$smoke_home/.pi" "$smoke_home/.pi/agent" "$legacy_stash_dir"
+node -e '
+const { writeFileSync } = require("node:fs");
+const [filePath, cwdKey, entryId, draft, schemaVersion, createdAt] = process.argv.slice(1);
+const timestamp = Number(createdAt);
+const file = {
+  schemaVersion: Number(schemaVersion),
+  cwd: cwdKey,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  entries: [{ id: entryId, text: draft, createdAt: timestamp }],
+  restoredAssetLeases: [],
+  pendingAssetCleanup: [],
+};
+writeFileSync(filePath, JSON.stringify(file), { mode: 0o600, flag: "wx" });
+' "$legacy_stash_file" "$MIGRATION_SCOPE_KEY" "$MIGRATION_ENTRY_ID" "$MIGRATION_DRAFT" \
+	"$MIGRATION_SCHEMA_VERSION" "$MIGRATION_CREATED_AT"
+
 create_pane restore
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_RESTORE_READY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "second Pi launch did not load packaged commands"
+herdr pane run "$pane_id" "/stash-migrate" >/dev/null
+herdr pane wait-output "$pane_id" --match "$MIGRATION_SUCCESS" --source recent-unwrapped \
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "legacy scope was not migrated"
+node -e '
+const { existsSync, readFileSync } = require("node:fs");
+const [source, destination, draft] = process.argv.slice(1);
+if (existsSync(source) || !existsSync(destination)) process.exit(1);
+const file = JSON.parse(readFileSync(destination, "utf8"));
+if (!Array.isArray(file.entries) || file.entries.length !== 1 || file.entries[0]?.text !== draft) {
+  process.exit(1);
+}
+' "$legacy_stash_file" "$migrated_stash_file" "$MIGRATION_DRAFT" || fail "migrated state is invalid"
 herdr pane run "$pane_id" "/stash-pop" >/dev/null
 herdr pane wait-output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not restored"
@@ -199,4 +239,4 @@ if (existsSync(assetsRoot) && readdirSync(assetsRoot).length !== 0) process.exit
 ' "$stash_file" || fail "restored stash or image cleanup remained on disk"
 close_pane || fail "second Pi launch left a live process"
 
-printf 'pi-stash Herdr smoke passed: packaged draft and image survived two launches, restored, and were removed\n'
+printf 'pi-stash Herdr smoke passed: packaged migration, draft, and image flows completed across two launches\n'

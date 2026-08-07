@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 
 import {
+	cwdFromReversibleSanitizedKey,
 	defaultStashBaseDir,
 	resolveLegacyStashPaths,
 	resolveStashPaths,
@@ -35,6 +36,14 @@ test("sanitizeCwd limits long and multibyte keys to 200 UTF-8 bytes", () => {
 		assert.ok(sanitized.startsWith("v2--"));
 		assert.notEqual(sanitized, sanitizeCwd(`${cwd}-x`));
 	}
+});
+
+test("cwdFromReversibleSanitizedKey decodes only provably reversible v2 keys", () => {
+	assert.equal(cwdFromReversibleSanitizedKey("v2--"), "/");
+	assert.equal(cwdFromReversibleSanitizedKey(sanitizeCwd("/a/b")), "/a/b");
+	assert.equal(cwdFromReversibleSanitizedKey(sanitizeCwd("/a--b")), "/a--b");
+	assert.equal(cwdFromReversibleSanitizedKey(sanitizeLegacyCwd("/a/b")), undefined);
+	assert.equal(cwdFromReversibleSanitizedKey(sanitizeCwd(`/${"segment-".repeat(40)}`)), undefined);
 });
 
 test("defaultStashBaseDir lives under Pi's configured agent directory", () => {
