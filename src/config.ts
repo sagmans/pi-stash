@@ -13,7 +13,7 @@ const CONFIG_MAX_BYTES = 64 * 1024;
 const ROOT_FIELDS = new Set(["keybindings"]);
 const KEYBINDING_FIELDS = new Set(["stash", "list"]);
 
-export const DEFAULT_STASH_SHORTCUT = "ctrl+shift+s";
+export const DEFAULT_STASH_SHORTCUT = "ctrl+shift+h";
 export const DEFAULT_LIST_SHORTCUT = "ctrl+shift+r";
 
 export type StashConfig = {
