@@ -21,8 +21,8 @@ The exact current working directory whose drafts share one private stash file; l
 _Avoid_: Repository scope, project scope
 
 **Restore**:
-Place a stash entry into the editor and remove that entry from the stash while retaining copied assets referenced by its text.
-_Avoid_: Pop when describing user behavior
+Place a stash entry into the editor and remove that entry from the stash while retaining copied assets referenced by its text. `/stash-pop` is a command alias for restoring the newest entry.
+_Avoid_: Pop when describing user behavior outside the literal command name
 
 **Drop**:
 Delete a stash entry and its copied assets without placing its draft into the editor.

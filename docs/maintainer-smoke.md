@@ -33,8 +33,9 @@ not a package-user dependency. To reproduce a release run, download its
 
 The script:
 
-1. Creates disposable `HOME` and `PI_CODING_AGENT_DIR` trees plus synthetic text
-   and a minimal clipboard-image fixture under the operating-system temp root.
+1. Creates disposable `HOME` and `PI_CODING_AGENT_DIR` trees plus synthetic text,
+   a reversible legacy stash, and a minimal clipboard-image fixture under the
+   operating-system temp root.
 2. Extracts the supplied package, or packs the checkout, and loads only its
    public extension entry point alongside a maintainer smoke driver.
 3. Opens a non-focused pane and launches Pi with one-run project trust, update
@@ -43,9 +44,11 @@ The script:
    then Herdr sends default native stash shortcut with synthetic editor draft.
 4. Verifies the editor cleared and durable state owns one copied image, exits
    the first Pi process, and closes its pane.
-5. Starts a fresh pane and Pi process, invokes `/stash-restore`, verifies the full
-   draft reappears, clears the synthetic editor, invokes `/stash-cleanup`, and
-   confirms the entry, restored-image lease, cleanup queue, and copied image are gone.
+5. Starts a fresh pane and Pi process, invokes `/stash-migrate`, verifies the
+   synthetic legacy source moved into configured storage, invokes `/stash-pop`,
+   verifies the full draft reappears, clears the synthetic editor, invokes
+   `/stash-cleanup`, and confirms the entry, restored-image lease, cleanup queue,
+   and copied image are gone.
 6. Fails on timeouts, warnings, extension errors, live created panes, malformed
    state, or residual disposable data. Raw pane output remains in memory and
    only one concise pass/fail line is printed.

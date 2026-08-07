@@ -51,19 +51,29 @@ stays in pending cleanup and is retried during later session startup or
 
 ## Automatic migration
 
-When Pi's configured agent directory differs from the historical fixed
-`~/.pi/agent` location, startup checks the legacy `~/.pi/agent/pi-stash/` root
-for the current worktree scope only. If the configured destination is empty,
+Startup checks the current worktree in the historical fixed
+`~/.pi/agent/pi-stash/` root and checks for an unprefixed v1 key beside current
+storage. If the configured destination is empty and exactly one source exists,
 pi-stash copies normalized state and only assets owned by that scope, verifies
 the destination, then removes the migrated source. A private marker makes an
 interrupted migration resumable.
 
 A pre-existing destination, malformed legacy state or marker, missing required
-asset, unsafe file, or conflicting copied bytes stops migration. pi-stash does
-not overwrite either stash to guess at a merge. Exit Pi, back up both roots and
-any marker, and resolve the conflict with a trusted copy of the same or newer
-extension before retrying. Schema version 1 files in an otherwise current root
-are upgraded atomically to schema version 2 on load.
+asset, unsafe file, competing source, or conflicting copied bytes stops
+migration. pi-stash does not overwrite, merge, or quarantine either stash to
+guess at a winner. Exit Pi, back up both roots and any marker, and resolve the
+conflict with a trusted copy of the same or newer extension before retrying.
+Schema version 1 files in an otherwise current root are upgraded atomically to
+schema version 2 on load.
+
+`/stash-migrate` extends the scan beyond the current scope only where the
+on-disk key proves the original working directory: untruncated v2 keys are
+reversible, including the filesystem root. Historical v1 keys are not
+injective, and truncated v1 or v2 keys omit part of the original path, so the
+sweep leaves them untouched unless the key matches Pi's authoritative current
+working directory. Every skipped path and reason is reported for private manual
+review. The sweep checks cancellation between scopes and a migration marker
+pins retries to the exact source that began the operation.
 
 ## Recovery notices
 

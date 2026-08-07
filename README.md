@@ -50,10 +50,10 @@ divergent behavior through the bug channel.
 | Stash current editor draft | — | `Ctrl+Alt+S` |
 | List drafts | `/stash-list` | `Ctrl+Alt+R` |
 | Restore newest or selected entry | `/stash-restore [index-or-id]` | — |
-| Pop newest entry into the editor | `/stash-pop` | — |
+| Restore newest entry (command alias) | `/stash-pop` | — |
 | Delete newest or selected entry | `/stash-drop [index-or-id]` | — |
 | Remove unreferenced restored images | `/stash-cleanup` | — |
-| Migrate every legacy stash scope, quarantining conflicts | `/stash-migrate` | — |
+| Migrate legacy scopes whose identity is provable; report the rest | `/stash-migrate` | — |
 | Delete all drafts and owned images after confirmation | `/stash-clear` | — |
 
 `/stash <draft>` persists its argument without reading or clearing current
@@ -66,10 +66,11 @@ and `/stash-pop` both restore the newest entry. Drop and confirmed clear
 queue owned images for deletion. `/stash-cleanup` retries image cleanup; close
 other Pi sessions for same scope first.
 
-Startup warns when any legacy stash scope conflicts with current data;
-`/stash-migrate` sweeps every legacy scope — migrating clean ones, quarantining
-conflicts as `*.migrate-conflict` files, and listing files that failed for
-manual review or deletion.
+Startup migrates the current working directory from either historical key
+format because Pi supplies that scope's authoritative path. `/stash-migrate`
+also sweeps globally reversible, untruncated v2 keys. Other non-injective v1
+or truncated keys, competing sources, malformed state, and destination
+conflicts remain untouched and are listed for private manual review.
 
 The overlay supports configured navigation and confirmation keys, typing to
 filter, preview, `F5` refresh, and `d` to drop.

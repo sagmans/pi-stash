@@ -6,6 +6,21 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Added
+
+- Add `/stash-pop` as a direct alias for restoring the newest draft.
+- Add `/stash-migrate` to sweep legacy scopes whose working-directory identity can be proven.
+
+### Changed
+
+- Use `Ctrl+Alt+S` and `Ctrl+Alt+R` as the default native shortcuts; the stash chord no longer aliases terminal `Alt+Backspace` input.
+- Leave ambiguous, truncated, competing, malformed, and conflicting legacy sources untouched for private manual review instead of quarantining them automatically.
+
+### Fixed
+
+- Pin migration retries to one planned source, preserve typed conflict phases, decode the filesystem root, and cancel global sweeps between scopes.
+- Track migration and session operations through the same abortable queue lifecycle, including unavailable sessions.
+
 ## [0.1.2] - 2026-08-07
 
 ### Fixed
