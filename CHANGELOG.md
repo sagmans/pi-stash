@@ -6,7 +6,16 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-07
+
+### Fixed
+
+- Publish the verified package through an explicit local tarball path so npm cannot reinterpret it as Git shorthand.
+- Carry the legacy unprefixed stash-key migration fix from tagged but unpublished version 0.1.1.
+
 ## [0.1.1] - 2026-08-07
+
+Version 0.1.1 was tagged but not published to npm because its publication job failed.
 
 ### Changed
 
@@ -59,6 +68,7 @@ All notable changes to this project are documented here. This format follows
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/sagmans/pi-stash/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sagmans/pi-stash/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sagmans/pi-stash/releases/tag/v0.1.0
