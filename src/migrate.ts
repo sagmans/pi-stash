@@ -43,7 +43,7 @@ const MIGRATED_QUARANTINE_LABEL = "migrated";
 const MIGRATE_CONFLICT_LABEL = "migrate-conflict";
 const DESTINATION_CONFLICT_MESSAGE = "destination conflicts with legacy stash migration";
 const DESTINATION_CONFLICT_GUIDANCE =
-	'Review both files, keep the one holding the drafts you want, remove the other and its matching "-assets" directory, then run /reload';
+	'Run /stash-migrate to quarantine the legacy file, or keep the file holding the drafts you want and remove the other and its matching "-assets" directory; then restart pi or run /reload';
 const MALFORMED_LEGACY_MESSAGE = "malformed legacy stash cannot be migrated";
 const MALFORMED_MARKER_MESSAGE = "malformed legacy migration marker";
 const MISSING_ASSETS_MESSAGE = "missing owned assets for active stash entry";

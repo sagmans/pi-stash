@@ -44,7 +44,9 @@ export {
 const RESTORE_RECOVERED_MESSAGE = "Recovered a restore interrupted before editor acknowledgement";
 const STASH_USAGE_MESSAGE = "Usage: /stash <draft>";
 const LEGACY_CONFLICT_HINT_MESSAGE =
-	"{count} legacy stash conflict{plural} found; run /stash-migrate to migrate or quarantine them from a directory where pi-stash is available";
+	"{count} legacy stash conflict{plural} found; run /stash-migrate to migrate or quarantine {object}";
+const MIGRATION_RECHECK_MESSAGE =
+	"Migration done; restart pi or run /reload to re-check this directory";
 
 type ActiveSession = {
 	cwd: string;
@@ -132,6 +134,8 @@ function registerStashCommands(
 		operation: (signal: AbortSignal) => Promise<void>,
 	) => Promise<void>,
 	legacyBaseDir: string,
+	getState: () => SessionState,
+	baseDir: string,
 ): void {
 	pi.registerCommand("stash", {
 		description: "Stash the draft supplied after the command without changing the editor",
@@ -189,9 +193,21 @@ function registerStashCommands(
 	pi.registerCommand("stash-migrate", {
 		description: "Migrate every legacy stash scope, quarantining conflicting legacy files",
 		handler: async (_args, ctx) => {
-			const session = resolve(ctx);
-			if (!session) return;
-			await enqueue(session, (signal) => doMigrateAll(session, legacyBaseDir, signal));
+			const state = getState();
+			if (state.kind === "inactive" || state.session?.abort.signal.aborted) {
+				safeNotify(ctx.ui, "pi-stash is not ready yet", "warning");
+				return;
+			}
+			if (state.kind === "unavailable") {
+				// The sweep never reads the current store, so it can run even when
+				// this scope is unavailable — and may be the only way to unblock it.
+				await doMigrateAll(ctx.ui, baseDir, legacyBaseDir);
+				safeNotify(ctx.ui, MIGRATION_RECHECK_MESSAGE, "info");
+				return;
+			}
+			await enqueue(state.session, (signal) =>
+				doMigrateAll(ctx.ui, baseDir, legacyBaseDir, signal),
+			);
 		},
 	});
 	pi.registerCommand("stash-clear", {
@@ -244,6 +260,8 @@ export type PiStashInstallOptions = {
 
 export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions = {}): void {
 	const config = options.config ?? DEFAULT_STASH_CONFIG;
+	const baseDir = defaultStashBaseDir();
+	const legacyBaseDir = options.legacyBaseDir ?? legacyStashBaseDir();
 	let state: SessionState = { kind: "inactive" };
 
 	const closeActiveSession = async (closing: ActiveSession): Promise<void> => {
@@ -268,13 +286,11 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		if (replacing) await closeActiveSession(replacing);
 		if (!isSupportedSession(ctx, options.isTerminal)) return;
 
-		const baseDir = defaultStashBaseDir();
 		const paths = resolveStashPaths(ctx.cwd, baseDir);
 		let store: StashStore;
 		try {
 			// Newer data must block every migration and recovery mutation.
 			store = await loadStashStore(paths);
-			const legacyBaseDir = options.legacyBaseDir ?? legacyStashBaseDir();
 			// Advisory sweep hint: other scopes may hold legacy stashes that
 			// collide with current data and will need the user's decision.
 			try {
@@ -282,10 +298,9 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 				if (conflicts.length > 0) {
 					safeNotify(
 						ctx.ui,
-						LEGACY_CONFLICT_HINT_MESSAGE.replace("{count}", String(conflicts.length)).replace(
-							"{plural}",
-							conflicts.length === 1 ? "" : "s",
-						),
+						LEGACY_CONFLICT_HINT_MESSAGE.replace("{count}", String(conflicts.length))
+							.replace("{plural}", conflicts.length === 1 ? "" : "s")
+							.replace("{object}", conflicts.length === 1 ? "it" : "them"),
 						"warning",
 					);
 				}
@@ -338,12 +353,7 @@ export function installPiStash(pi: ExtensionAPI, options: PiStashInstallOptions 
 		if (closing) await closeActiveSession(closing);
 	});
 
-	registerStashCommands(
-		pi,
-		requireActiveForCommand,
-		enqueue,
-		options.legacyBaseDir ?? legacyStashBaseDir(),
-	);
+	registerStashCommands(pi, requireActiveForCommand, enqueue, legacyBaseDir, () => state, baseDir);
 	registerStashShortcuts(pi, config, requireActiveForCommand, enqueue);
 }
 

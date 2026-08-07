@@ -213,13 +213,13 @@ export async function doAssetCleanup(
 }
 
 export async function doMigrateAll(
-	target: StashTarget,
+	ui: PiUi,
+	destinationBaseDir: string,
 	legacyBaseDir: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const { ui, paths } = target;
 	if (signal?.aborted) return;
-	const summary = await migrateAllLegacyStashes(path.dirname(paths.stashFile), legacyBaseDir);
+	const summary = await migrateAllLegacyStashes(destinationBaseDir, legacyBaseDir);
 	if (signal?.aborted) return;
 	safeNotify(
 		ui,

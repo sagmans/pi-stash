@@ -1368,6 +1368,9 @@ test("unsupported schema stays unavailable across startup and every command", as
 		assert.ok(unavailableReason.includes("export"));
 		assert.ok(ui.widgets.get("pi-stash")?.some((line) => line.includes("unavailable")));
 		for (const name of STASH_COMMAND_NAMES) {
+			// The migration sweep deliberately runs from an unavailable session
+			// and would change the trailing notification.
+			if (name === "stash-migrate") continue;
 			await commands.get(name)?.handler("0", ctx);
 			assert.equal(ui.notifs.at(-1)?.message, unavailableReason, name);
 		}
@@ -1464,6 +1467,64 @@ test("startup hints /stash-migrate when any legacy scope conflicts", async () =>
 	const hint = ui.notifs.find(({ message }) => message.includes("/stash-migrate"));
 	assert.ok(hint, JSON.stringify(ui.notifs));
 	assert.match(hint?.message ?? "", /1 legacy stash conflict/);
+});
+
+test("an unavailable session runs /stash-migrate to quarantine its own conflict", async () => {
+	const { pi, handlers, commands } = extensionHarness();
+	const legacyBaseDir = path.join(baseDir, "legacy");
+	installPiStash(pi, { legacyBaseDir });
+	const ui = fakeUi();
+	const ctx = { cwd: "/conflict-scope", mode: "tui", hasUI: true, ui };
+	const legacy = resolveLegacyStashPaths(ctx.cwd, legacyBaseDir);
+	mkdirSync(legacyBaseDir, { recursive: true });
+	writeFileSync(
+		legacy.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: legacy.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+	const destination = resolveStashPaths(ctx.cwd, path.join(baseDir, "pi-stash"));
+	mkdirSync(path.dirname(destination.stashFile), { recursive: true });
+	writeFileSync(
+		destination.stashFile,
+		JSON.stringify({
+			schemaVersion: STASH_SCHEMA_VERSION,
+			cwd: destination.sanitized,
+			createdAt: 1,
+			updatedAt: 1,
+			entries: [],
+			restoredAssetLeases: [],
+			pendingAssetCleanup: [],
+		}),
+		{ mode: 0o600 },
+	);
+
+	await handlers.get("session_start")?.({ type: "session_start" }, ctx);
+	assert.ok(
+		ui.notifs.at(-1)?.message?.includes("destination conflicts") ?? false,
+		ui.notifs.at(-1)?.message ?? "",
+	);
+
+	await commands.get("stash-migrate")?.handler("", ctx);
+
+	assert.equal(existsSync(legacy.stashFile), false);
+	assert.equal(existsSync(`${legacy.stashFile}.migrate-conflict`), true);
+	assert.equal(existsSync(destination.stashFile), true);
+	assert.ok(ui.notifs.some(({ message }) => message.includes("quarantined 1 legacy conflicts")));
+	assert.ok(
+		ui.notifs.at(-1)?.message?.includes("/reload") ?? false,
+		ui.notifs.at(-1)?.message ?? "",
+	);
+	// Other commands remain blocked until the user restarts or reloads.
+	await commands.get("stash")?.handler("blocked", ctx);
+	assert.ok(ui.notifs.at(-1)?.message?.includes("destination conflicts") ?? false);
 });
 
 test("an unsupported session cannot leak the previous scope's unavailable reason", async () => {
