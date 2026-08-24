@@ -15,6 +15,7 @@ readonly MIGRATION_DRAFT="PI_STASH_SMOKE_MIGRATION_4B8C1E6F"
 readonly MIGRATION_SCHEMA_VERSION="2"
 readonly MIGRATION_CREATED_AT="1700000000000"
 readonly MIGRATION_SUCCESS="Stash migration: migrated 1, skipped 0"
+readonly EXPECTED_ISOLATED_MODEL_WARNING="Warning: No models available."
 
 package_input="${1:-}"
 smoke_root=""
@@ -74,6 +75,7 @@ process.stdin.on("end", () => {
 assert_clean_output() {
 	local capture
 	capture="$(herdr pane read "$pane_id" --source recent-unwrapped --lines 400)" || fail "unable to inspect Pi output"
+	capture="${capture//$EXPECTED_ISOLATED_MODEL_WARNING/}"
 	if [[ "$capture" =~ Warning|ExperimentalWarning|extension_error|PI_STASH_SMOKE_FAILED ]]; then
 		fail "Pi emitted a warning or extension failure"
 	fi

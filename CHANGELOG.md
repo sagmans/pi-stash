@@ -6,6 +6,11 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Align the supported Pi TUI target, maintainer tooling, compatibility checks, and reporting guidance with Pi 0.84.3.
+- Update the pinned Biome CLI to 2.5.9 and Node.js type definitions to 26.2.0.
+
 ## [0.1.3] - 2026-08-07
 
 ### Added
