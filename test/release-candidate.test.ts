@@ -10,7 +10,7 @@ const CHANGELOG_PATH = path.resolve("CHANGELOG.md");
 const README_PATH = path.resolve("README.md");
 const MAINTAINER_GUIDE_PATH = path.resolve("docs/maintainer-development.md");
 const UNRELEASED_HEADING = "## [Unreleased]";
-const SUPPORTED_PI_VERSION = "0.83.0";
+const SUPPORTED_PI_VERSION = "0.84.3";
 const PI_CORE_PEER_RANGE = "*";
 const ISSUE_TEMPLATE_PATH = path.resolve(".github/ISSUE_TEMPLATE/bug_report.yml");
 

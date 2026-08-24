@@ -27,7 +27,7 @@ pi install npm:@sagmans/pi-stash
 ```
 
 Install from npm so Pi offers updates only after a published release. Supported
-runtime: macOS or Linux, Node.js `>=22.19.0`, Pi `0.83.0`, interactive TUI mode.
+runtime: macOS or Linux, Node.js `>=22.19.0`, Pi `0.84.3`, interactive TUI mode.
 Native Windows is unsupported because storage relies on POSIX ownership and
 permission guarantees.
 

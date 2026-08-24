@@ -5,6 +5,10 @@ import test from "node:test";
 
 const SMOKE_SCRIPT = path.resolve("scripts/maintainer-smoke-herdr.sh");
 const SCRIPT = readFileSync(SMOKE_SCRIPT, "utf8");
+const EXPECTED_MODEL_WARNING_DECLARATION =
+	'readonly EXPECTED_ISOLATED_MODEL_WARNING="Warning: No models available."';
+const EXPECTED_MODEL_WARNING_REMOVAL_PATTERN =
+	/capture="\$\{capture\/\/\$EXPECTED_ISOLATED_MODEL_WARNING\/\}"/u;
 
 test("Herdr smoke runs two packaged-extension launches with isolated migration state", () => {
 	assert.match(SCRIPT, /package_input="\$\{1:-\}"/);
@@ -39,6 +43,8 @@ test("Herdr smoke proves image persistence, removal, warnings, and cleanup", () 
 	assert.match(SCRIPT, /\/stash-cleanup-images/);
 	assert.doesNotMatch(SCRIPT, /\/stash-cleanup(?:\s|"|$)/m);
 	assert.match(SCRIPT, /readdirSync\(assetsRoot\)\.length !== 0/);
+	assert.ok(SCRIPT.includes(EXPECTED_MODEL_WARNING_DECLARATION));
+	assert.match(SCRIPT, EXPECTED_MODEL_WARNING_REMOVAL_PATTERN);
 	assert.match(SCRIPT, /Warning\|ExperimentalWarning\|extension_error\|PI_STASH_SMOKE_FAILED/);
 	assert.match(SCRIPT, /herdr pane close/);
 	assert.match(SCRIPT, /residual disposable data/);
