@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-24
+
 ### Changed
 
 - Align the supported Pi TUI target, maintainer tooling, compatibility checks, and reporting guidance with Pi 0.84.3.
@@ -94,7 +96,8 @@ Version 0.1.1 was tagged but not published to npm because its publication job fa
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/sagmans/pi-stash/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sagmans/pi-stash/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sagmans/pi-stash/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sagmans/pi-stash/compare/v0.1.0...v0.1.1
