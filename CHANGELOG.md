@@ -6,6 +6,15 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Align the supported Pi TUI target, maintainer tooling, compatibility checks, and reporting guidance with Pi 0.87.0.
+- Record the packaged two-launch smoke as passing with Pi 0.87.0 and Herdr 0.9.1.
+
+### Fixed
+
+- Accept the npm 12 `npm pack --dry-run --json` report shape in packaged content verification.
+
 ## [0.1.4] - 2026-08-24
 
 ### Changed

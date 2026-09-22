@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly TESTED_HERDR_VERSION="0.8.0"
+readonly TESTED_HERDR_VERSION="0.9.1"
 readonly READY_TIMEOUT_MS="30000"
 readonly ACTION_TIMEOUT_MS="30000"
 readonly PANE_RATIO="0.5"
