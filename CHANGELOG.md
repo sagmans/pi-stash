@@ -6,6 +6,14 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-30
+
+### Compatibility
+
+- Add an independent Pi 0.99.1 CI check while preserving the locked baseline.
+- Use packaged readiness markers instead of the transient startup banner in the runtime smoke check.
+- Verify the packaged two-launch smoke and combined editor checks on Pi 0.99.1.
+
 ### Changed
 
 - Align the supported Pi TUI target, maintainer tooling, compatibility checks, and reporting guidance with Pi 0.87.0.
@@ -105,7 +113,8 @@ Version 0.1.1 was tagged but not published to npm because its publication job fa
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/sagmans/pi-stash/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sagmans/pi-stash/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sagmans/pi-stash/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sagmans/pi-stash/compare/v0.1.1...v0.1.2
