@@ -105,8 +105,8 @@ create_pane() {
 		"$tmp_root" "$smoke_home" "$agent_dir" "$phase" "$extension_path" "$clipboard_image" "$SMOKE_CANARY" \
 		"$pi_bin" "$extension_path" "$driver_path"
 	herdr pane run "$pane_id" "$launch_command" >/dev/null
-	herdr pane wait-output "$pane_id" --match "pi v$pi_version" --source recent-unwrapped \
-		--timeout "$READY_TIMEOUT_MS" >/dev/null || fail "Pi TUI did not become ready"
+	# Phase markers prove the packaged commands loaded; the startup banner can
+	# leave the viewport before Herdr observes it on newer Pi hosts.
 }
 
 [[ "${HERDR_ENV:-}" == "1" ]] || fail "HERDR_ENV=1 is required"
@@ -159,6 +159,7 @@ writeFileSync(process.argv[1], Buffer.from("89504e470d0a1a0a", "hex"), { mode: 0
 ' "$clipboard_image"
 chmod "$PRIVATE_FILE_MODE" "$clipboard_image"
 pi_version="$($pi_bin --version)"
+printf 'pi-stash Herdr smoke host: Pi %s\n' "$pi_version"
 
 create_pane stash
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASH_READY" --source recent-unwrapped \
