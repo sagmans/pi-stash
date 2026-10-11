@@ -6,6 +6,10 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Update maintainer tooling (Biome 2.5.15, `@types/node` 26.6.4) and the pinned `actions/setup-node`, `actions/upload-artifact` and `actions/download-artifact` versions.
+
 ## [0.1.5] - 2026-09-30
 
 ### Compatibility
