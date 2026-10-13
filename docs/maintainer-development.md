@@ -1,6 +1,6 @@
 # Maintainer development
 
-CI also runs typecheck and tests against Pi 1.1.0 in a separate job.
+The `pre-push` hook also runs typecheck and tests against Pi 1.1.0 in a throwaway copy.
 The locked baseline remains unchanged so older supported hosts retain coverage.
 
 Owner-authorized maintenance. Public bug reports are welcome; external pull
@@ -26,8 +26,8 @@ npm run smoke:herdr -- /path/to/package.tgz  # smoke an exact CI artifact
 npm pack --dry-run   # inspect exact public package contents
 ```
 
-`npm run verify:ci` is the authoritative maintainer gate and hosted CI runs it
-on Ubuntu with Node 24. `npm run verify` is its deterministic offline subset.
+`npm run verify:ci` is the authoritative maintainer gate and the tracked
+`pre-push` hook runs it. `npm run verify` is its deterministic offline subset.
 Tagged releases build one npm artifact, run source verification, then install
 and check that artifact's entry point on the same hosted platform. Publication
 waits for package and verification success. Failed, cancelled, skipped, or
@@ -45,8 +45,9 @@ Two Biome rules are disabled in `biome.json` to keep the development template
 aligned with pi-history. pi-stash does not currently rely on either exception;
 remove an override only through a coordinated template update.
 
-Keep the user-level `core.hooksPath` authoritative; do not override it per clone.
-The tracked `.husky/pre-commit` and `.husky/pre-push` scripts are optional targets
-for global hook dispatchers. They run `npm run check` before commits and
-`npm run typecheck && npm test` before pushes. Run those gates explicitly when
-the global hooks do not dispatch repository hooks.
+Git hooks live in `.githooks/`: pre-commit runs Biome on the staged files, pre-push runs
+`npm run verify:ci` and the Pi compatibility check on each pushed commit. Each hook runs the generic checks first.
+Hooks are dev-only: there is deliberately no `prepare` script, because pi runs
+`npm install` inside its package clones and hooks must never install on user
+machines. Maintainers run `scripts/setup-hooks` once per clone,
+which sets the clone's `core.hooksPath` to `.githooks`.
