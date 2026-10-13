@@ -1,11 +1,14 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-const CI_WORKFLOW = readFileSync(path.resolve(".github/workflows/ci.yml"), "utf8");
+// Push/PR checks moved to the tracked pre-push hook to save CI minutes; the
+// release workflow is the only remote gate and must keep its own verify job.
+const CI_WORKFLOW = path.resolve(".github/workflows/ci.yml");
+const PRE_PUSH_HOOK = path.resolve(".githooks/pre-push.d/20-verify");
 const RELEASE_WORKFLOW = path.resolve(".github/workflows/release.yml");
 const WORKFLOW = readFileSync(RELEASE_WORKFLOW, "utf8");
 
@@ -19,18 +22,14 @@ function job(name: string, nextName?: string): string {
 }
 
 test("only the release workflow runs for version tags", () => {
-	const ciHeader = CI_WORKFLOW.slice(0, CI_WORKFLOW.indexOf("jobs:\n"));
 	const releaseHeader = WORKFLOW.slice(0, WORKFLOW.indexOf("jobs:\n"));
 
-	assert.doesNotMatch(ciHeader, /tags:/);
+	assert.equal(existsSync(CI_WORKFLOW), false);
 	assert.match(releaseHeader, /push:\n\s+tags: \["v\*"\]/);
 });
 
-test("CI verifies source once on Ubuntu with Node 24", () => {
-	assert.match(CI_WORKFLOW, /runs-on: ubuntu-latest/);
-	assert.match(CI_WORKFLOW, /node-version: "24"/);
-	assert.doesNotMatch(CI_WORKFLOW, /strategy:|matrix:|macos-latest|22\.19\.0/);
-	assert.match(CI_WORKFLOW, /npm run verify:ci/);
+test("the pre-push hook runs the full verification", () => {
+	assert.match(readFileSync(PRE_PUSH_HOOK, "utf8"), /npm run verify:ci/);
 });
 
 test("release verifies one immutable package on Ubuntu with Node 24", () => {

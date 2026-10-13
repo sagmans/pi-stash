@@ -53,8 +53,10 @@ test("candidate depends only on the Pi TUI surface it imports", () => {
 	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_VERSION);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], PI_CORE_PEER_RANGE);
 	assert.equal(manifest.devDependencies.husky, undefined);
-	assert.match(maintainerGuide, /Keep the user-level `core\.hooksPath` authoritative/u);
-	assert.doesNotMatch(maintainerGuide, /git config .*core\.hooksPath/u);
+	// Hooks are turned on per clone by scripts/setup-hooks, never by an
+	// install script that would run on user machines.
+	assert.match(maintainerGuide, /scripts\/setup-hooks/u);
+	assert.match(maintainerGuide, /generic checks first/u);
 	assert.ok(readme.includes(`Pi \`${SUPPORTED_PI_VERSION}\``));
 	assert.match(
 		issueTemplate,
