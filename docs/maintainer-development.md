@@ -1,6 +1,6 @@
 # Maintainer development
 
-CI also runs typecheck and tests against Pi 1.1.0 in a separate job.
+The `pre-push` hook also runs typecheck and tests against Pi 1.1.0 in a throwaway copy.
 The locked baseline remains unchanged so older supported hosts retain coverage.
 
 Owner-authorized maintenance. Public bug reports are welcome; external pull
@@ -26,8 +26,8 @@ npm run smoke:herdr -- /path/to/package.tgz  # smoke an exact CI artifact
 npm pack --dry-run   # inspect exact public package contents
 ```
 
-`npm run verify:ci` is the authoritative maintainer gate and hosted CI runs it
-on Ubuntu with Node 24. `npm run verify` is its deterministic offline subset.
+`npm run verify:ci` is the authoritative maintainer gate and the tracked
+`pre-push` hook runs it. `npm run verify` is its deterministic offline subset.
 Tagged releases build one npm artifact, run source verification, then install
 and check that artifact's entry point on the same hosted platform. Publication
 waits for package and verification success. Failed, cancelled, skipped, or
