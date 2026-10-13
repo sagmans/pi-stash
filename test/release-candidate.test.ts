@@ -53,9 +53,9 @@ test("candidate depends only on the Pi TUI surface it imports", () => {
 	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_VERSION);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], PI_CORE_PEER_RANGE);
 	assert.equal(manifest.devDependencies.husky, undefined);
-	// Hooks chain the global hooks first, so the guide points at the setup
-	// script instead of telling maintainers to edit core.hooksPath by hand.
-	assert.match(maintainerGuide, /sh scripts\/setup-hooks\.sh/u);
+	// The global dotf hooks run the repo hooks once a clone is trusted, so the
+	// guide points at githooks-trust and never at a repo-local core.hooksPath.
+	assert.match(maintainerGuide, /githooks-trust/u);
 	assert.match(maintainerGuide, /global hook of the same name first/u);
 	assert.doesNotMatch(maintainerGuide, /git config .*core\.hooksPath/u);
 	assert.ok(readme.includes(`Pi \`${SUPPORTED_PI_VERSION}\``));

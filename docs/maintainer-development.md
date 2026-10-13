@@ -45,12 +45,9 @@ Two Biome rules are disabled in `biome.json` to keep the development template
 aligned with pi-history. pi-stash does not currently rely on either exception;
 remove an override only through a coordinated template update.
 
-Git hooks live in `.githooks/`: pre-commit runs `npm run check`, pre-push runs
-`npm run verify:ci`. Each hook runs the global hook of the same name first.
+Git hooks live in `.githooks/`: pre-commit runs Biome on the staged files, pre-push runs
+`npm run verify:ci` and the Pi compatibility check on each pushed commit. Each hook runs the global hook of the same name first.
 Hooks are dev-only: there is deliberately no `prepare` script, because pi runs
 `npm install` inside its package clones and hooks must never install on user
-machines. Maintainers opt in once after cloning:
-
-```bash
-sh scripts/setup-hooks.sh
-```
+machines. Maintainers trust each clone once with `githooks-trust`; the global dotf hooks
+then run `.githooks/<hook>.d/` (no repo-local `core.hooksPath`).
