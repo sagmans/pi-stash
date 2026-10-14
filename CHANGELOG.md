@@ -8,6 +8,11 @@ All notable changes to this project are documented here. This format follows
 
 ### Compatibility
 
+- Support Node.js 22, 24 and 26: `engines.node` is now `>=22.19.0`, and typecheck plus tests pass on Node 22.19.0, 24.21.0 and 26.11.1. Development types move to `@types/node` 26.6.5.
+- The release-setup test's fake `gh` now runs from a `.cjs` file, so an unrelated `package.json` above the temp directory cannot make Node load it as an ES module.
+
+### Compatibility
+
 - Support Pi 1.x: the independent CI compatibility check now runs against Pi 1.1.0 instead of 0.99.1, alongside the locked 0.87.0 baseline. The extension needed no source changes; the Pi 1.0 to 1.1 changelog has no breaking change to the TUI surface it imports.
 
 ### Changed

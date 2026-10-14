@@ -24,12 +24,25 @@ process.stdin.on("end", () => {
 
 type GhCall = { args: string[]; input: string };
 
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 function withFakeGh(run: (scratch: string, callsFile: string) => void): void {
 	const scratch = mkdtempSync(path.join(tmpdir(), "pi-stash-release-test-"));
 	try {
+		// The fake's body lives in a .cjs file so an unrelated package.json above
+		// the temp directory (for example a stray /tmp/package.json with
+		// "type": "module") cannot make Node load it as an ES module. `gh` is a
+		// shell shim because the setup script resolves `gh` from PATH.
+		const fakeGhScript = path.join(scratch, "gh.cjs");
 		const fakeGh = path.join(scratch, "gh");
 		const callsFile = path.join(scratch, "gh-calls.jsonl");
-		writeFileSync(fakeGh, FAKE_GH);
+		writeFileSync(fakeGhScript, FAKE_GH);
+		writeFileSync(
+			fakeGh,
+			`#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(fakeGhScript)} "$@"\n`,
+		);
 		chmodSync(fakeGh, 0o755);
 		run(scratch, callsFile);
 	} finally {
