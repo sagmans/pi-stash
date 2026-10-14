@@ -6,6 +6,8 @@ All notable changes to this project are documented here. This format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-14
+
 ### Compatibility
 
 - Support Node.js 22, 24 and 26: `engines.node` is now `>=22.19.0`, and typecheck plus tests pass on Node 22.19.0, 24.21.0 and 26.11.1. Development types move to `@types/node` 26.6.5.
@@ -126,7 +128,8 @@ Version 0.1.1 was tagged but not published to npm because its publication job fa
 - Run the packaged Herdr smoke on Herdr `0.8.0`, which replaces the `wait output` command with `pane wait-output`.
 - Repeat smoke driver phase markers so the Herdr watcher cannot miss transient notifications between its own poll cycles.
 
-[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/sagmans/pi-stash/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/sagmans/pi-stash/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sagmans/pi-stash/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sagmans/pi-stash/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sagmans/pi-stash/compare/v0.1.2...v0.1.3
