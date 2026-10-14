@@ -224,10 +224,12 @@ if (!Array.isArray(file.entries) || file.entries.length !== 1 || file.entries[0]
 }
 ' "$legacy_stash_file" "$migrated_stash_file" "$MIGRATION_DRAFT" || fail "migrated state is invalid"
 herdr pane run "$pane_id" "/stash-pop" >/dev/null
-herdr pane wait-output "$pane_id" --match "$SMOKE_CANARY" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not popped"
+# The driver polls the editor every 25 ms and clears it as soon as the popped
+# canary appears, so the canary is on screen for one frame at most and Herdr's
+# output polling can miss it. The driver emits CLEANUP_READY only after it has
+# read the canary from the editor, so that marker proves the pop.
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_CLEANUP_READY" --source recent-unwrapped \
-	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "popped editor was not cleared for image cleanup"
+	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "synthetic draft was not popped"
 herdr pane run "$pane_id" "/stash-cleanup-images" >/dev/null
 herdr pane wait-output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "popped image cleanup did not complete"
