@@ -18,6 +18,10 @@ import type { StashEntry } from "../src/types.ts";
 // Identity theme keeps assertions free of ANSI codes.
 const theme: OverlayTheme = { fg: (_color, text) => text, bold: (text) => text };
 const ANSI_STYLE_PATTERN = /\u001b\[[0-9;]*m/gu;
+// Pi 1.2.0 and later wrap the focused input cursor in zero-width APC markers
+// (ESC _ ... BEL) that the host TUI resolves at paint time. They carry no
+// visible text, so assertions on rendered text must not see them either.
+const ANSI_APC_PATTERN = /\u001b_[^\u0007]*\u0007/gu;
 
 function entry(id: string, text: string, opts: Partial<StashEntry> = {}): StashEntry {
 	return { id, text, createdAt: 1, ...opts };
@@ -147,7 +151,11 @@ function harness(
 }
 
 function renderedText(overlay: StashOverlayComponent): string {
-	return overlay.render(80).join("\n").replace(ANSI_STYLE_PATTERN, "");
+	return overlay
+		.render(80)
+		.join("\n")
+		.replace(ANSI_STYLE_PATTERN, "")
+		.replace(ANSI_APC_PATTERN, "");
 }
 
 test("list: down wraps, confirm restores the selected entry", () => {
