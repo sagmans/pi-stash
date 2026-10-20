@@ -1,0 +1,71 @@
+{
+	"name": "@sagmans/pi-stash",
+	"version": "0.1.6",
+	"description": "Persistent worktree-scoped editor draft stashes for pi",
+	"license": "MIT",
+	"files": [
+		"index.ts",
+		"src",
+		"config.json",
+		"docs",
+		"CHANGELOG.md",
+		"CONTEXT.md",
+		"CONTRIBUTING.md",
+		"RELEASE.md",
+		"SECURITY.md"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/sagmans/pi-stash.git"
+	},
+	"homepage": "https://github.com/sagmans/pi-stash#readme",
+	"bugs": "https://github.com/sagmans/pi-stash/issues",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"stash",
+		"prompt-drafts"
+	],
+	"type": "module",
+	"exports": {
+		".": "./index.ts"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"omp": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "node --test test/*.test.ts",
+		"typecheck": "tsc --noEmit",
+		"check": "biome check .",
+		"check:fix": "biome check --write .",
+		"audit": "npm audit --audit-level=moderate",
+		"smoke:herdr": "bash scripts/maintainer-smoke-herdr.sh",
+		"verify": "npm run check && npm run typecheck && npm test",
+		"verify:ci": "npm run audit && npm run verify"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-tui": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"@earendil-works/pi-tui": "1.3.0",
+		"@types/node": "26.6.5",
+		"typescript": "7.0.2",
+		"@earendil-works/pi-coding-agent": "1.3.0",
+		"@earendil-works/pi-codemode": "1.3.0",
+		"@earendil-works/pi-ai": "1.3.0",
+		"@earendil-works/pi-agent-core": "1.3.0",
+		"@earendil-works/pi-mcp": "1.3.0"
+	}
+}
