@@ -15,8 +15,7 @@ process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
   fs.appendFileSync(process.env.GH_CALLS, JSON.stringify({ args, input }) + "\\n");
   const endpoint = args[1] ?? "";
-  if (endpoint === "users/reviewer") process.stdout.write("42\\n");
-  else if (endpoint.endsWith("deployment-branch-policies") && args.includes("--jq")) {
+  if (endpoint.endsWith("deployment-branch-policies") && args.includes("--jq")) {
     process.stdout.write(process.env.GH_EXISTING_POLICY ?? "");
   }
 });
@@ -67,11 +66,10 @@ function runSetup(scratch: string, callsFile: string, args: string[]): GhCall[] 
 
 test("release setup passes exact arguments and structured JSON without reinterpretation", () => {
 	withFakeGh((scratch, callsFile) => {
-		const calls = runSetup(scratch, callsFile, ["owner/repo", "reviewer", "v*"]);
+		const calls = runSetup(scratch, callsFile, ["owner/repo", "v*"]);
 		assert.deepEqual(
 			calls.map((call) => call.args),
 			[
-				["api", "users/reviewer", "--jq", ".id"],
 				["api", "repos/owner/repo/environments/npm-release", "-X", "PUT", "--input", "-"],
 				[
 					"api",
@@ -88,15 +86,16 @@ test("release setup passes exact arguments and structured JSON without reinterpr
 				["api", "repos/owner/repo/rulesets", "-X", "POST", "--input", "-"],
 			],
 		);
-		assert.deepEqual(JSON.parse(calls[1]?.input ?? ""), {
+		assert.deepEqual(JSON.parse(calls[0]?.input ?? ""), {
 			can_admins_bypass: false,
-			reviewers: [{ type: "User", id: 42 }],
+			wait_timer: 0,
+			reviewers: [],
 			deployment_branch_policy: {
 				protected_branches: false,
 				custom_branch_policies: true,
 			},
 		});
-		assert.deepEqual(JSON.parse(calls[4]?.input ?? ""), {
+		assert.deepEqual(JSON.parse(calls[3]?.input ?? ""), {
 			name: "release-tags-admin-only",
 			target: "tag",
 			enforcement: "active",
@@ -107,11 +106,11 @@ test("release setup passes exact arguments and structured JSON without reinterpr
 	});
 });
 
-test("release setup rejects malicious repository, reviewer, and tag inputs before gh", () => {
+test("release setup rejects malicious repository and tag inputs before gh", () => {
 	const maliciousInputs = [
-		["owner/repo\n-X DELETE", "reviewer", "v*"],
-		["owner/repo", 'reviewer"}', "v*"],
-		["owner/repo", "reviewer", 'v*"],"exclude":["refs/tags/**'],
+		["owner/repo\n-X DELETE", "v*"],
+		["owner/repo", 'v*"],"exclude":["refs/tags/**'],
+		["owner/repo", "v*", "extra"],
 	];
 	for (const args of maliciousInputs) {
 		withFakeGh((scratch, callsFile) => {
@@ -132,7 +131,7 @@ test("release setup rejects malicious repository, reviewer, and tag inputs befor
 test("release setup fails clearly when gh is unavailable", () => {
 	const scratch = mkdtempSync(path.join(tmpdir(), "pi-stash-release-missing-gh-"));
 	try {
-		const result = spawnSync("/bin/bash", [SETUP_SCRIPT, "owner/repo", "reviewer", "v*"], {
+		const result = spawnSync("/bin/bash", [SETUP_SCRIPT, "owner/repo", "v*"], {
 			env: { ...process.env, PATH: scratch },
 			encoding: "utf8",
 		});

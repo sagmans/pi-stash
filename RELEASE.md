@@ -36,15 +36,15 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
    and exactly one `Unreleased` section remains.
 8. Waiver evidence (only if a gate above is waived): a durable, SHA-bound
    waiver record written by the release owner exists against the exact
-   candidate SHA. With no waiver record, the tag cannot be created and
-   publication cannot be approved.
+   candidate SHA. With no waiver record, the tag cannot be created. The tag
+   push publishes automatically.
 
 A gate may only be waived by the release owner. Each waived gate requires one
 record using the canonical format below; blanket or multi-gate waivers are
 invalid. Preserve the validated JSON verbatim in an owner-protected, durable
 approval record bound to the candidate SHA before tagging. Reproduce it in the
 published GitHub release notes after publication. The pre-tag record — not the
-later GitHub release — authorizes tagging and publication approval.
+later GitHub release — authorizes tagging, and so publication.
 
 ```json
 {
@@ -88,18 +88,19 @@ git push origin vX.Y.Z
 Tag creation for `v*` is restricted to repository admins by a ruleset. The
 tag push triggers `release` workflow. Its `package` job creates one npm artifact;
 Ubuntu on Node 24 then runs source verification and checks the installed artifact
-entry. Approval-gated `publish`
+entry. The `publish`
 job depends on package and verification, so a failed, cancelled, skipped, or
 timed-out job blocks publication. It downloads and publishes the same
 digest-validated artifact; it never rebuilds from checkout. Inspect verification
 and package jobs when publication is blocked, then rerun a failed workflow only
 after correcting the candidate or a transient infrastructure failure.
 
-After prerequisite jobs succeed, workflow waits for release owner's approval on
-`npm-release` environment. Approved publish job uses OIDC trusted publishing (no
-npm token is stored; provenance attestations are generated automatically). A
-waived gate cannot clear this approval without SHA-bound waiver record from gate
-8.
+After prerequisite jobs succeed, the publish job runs automatically on the
+`npm-release` environment and uses OIDC trusted publishing (no npm token is
+stored; provenance attestations are generated automatically). The environment
+has no required reviewers: the admin-only tag ruleset makes the signed `v*` tag
+push by an admin the release approval. Therefore, complete every gate above,
+including any SHA-bound waiver record from gate 8, before you push the tag.
 
 After publication, create the GitHub release from the tag using the drafted
 notes.
@@ -112,8 +113,8 @@ package settings on npmjs.com. Package settings must also be set to "Require
 two-factor authentication and disallow tokens" so the OIDC flow is the only
 publish path. The release owner is the sole package maintainer.
 
-The GitHub-side pieces (approval-gated `npm-release` environment, tag
-deployment policy, admin-only tag ruleset) are provisioned by
+The GitHub-side pieces (`npm-release` environment with no required reviewers,
+tag deployment policy, admin-only tag ruleset) are provisioned by
 [`scripts/release/setup-github-oidc-release.sh`](scripts/release/setup-github-oidc-release.sh),
 which is idempotent and reusable for other repositories.
 
@@ -132,6 +133,11 @@ Configure npm trusted publishing with these exact values:
 
 ## Rollback
 
+- **Return to manual publish approval:** add a required reviewer to the
+  `npm-release` environment (repository settings, Environments). The publish
+  job then waits for that reviewer after the tag push. A rerun of the setup
+  script removes the reviewer again, so do not run it while manual approval is
+  in use.
 - **Bad tag/release:** keep the signed tag, source SHA, and GitHub release
   record intact. npm versions are immutable, and deleting these references
   breaks the source/notes chain and allows accidental tag-name reuse.
