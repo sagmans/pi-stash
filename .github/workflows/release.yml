@@ -25,7 +25,7 @@ jobs:
 
       - run: npm ci --ignore-scripts
 
-      # A mismatched tag must fail before an artifact can reach the approval gate.
+      # A mismatched tag must fail before an artifact can reach the publish job.
       - name: Tag must match package.json version
         run: |
           test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
@@ -78,7 +78,9 @@ jobs:
   publish:
     needs: [package, verify]
     runs-on: ubuntu-latest
-    # Environment approval makes publication a separate explicit owner decision.
+    # The environment binds OIDC trusted publishing and the tag-only deployment
+    # policy. It has no required reviewers: the admin-only tag ruleset makes the
+    # signed tag push the release approval.
     environment: npm-release
     timeout-minutes: 10
     permissions:
