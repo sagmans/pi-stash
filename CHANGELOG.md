@@ -10,6 +10,10 @@ All notable changes to this project are documented here. This format follows
 
 - Verify Pi 1.3.0: the pre-push compatibility check now also runs against Pi 1.3.0 from its own committed lockfile, beside Pi 1.1.0 and the locked 0.87.0 baseline. The overlay needed no source change; one overlay test now ignores the invisible cursor markers that Pi 1.2.0 and later add to rendered input.
 
+### Changed
+
+- Release publication is automatic: a signed `v*` tag push by an admin now publishes to npm through OIDC trusted publishing, with no separate environment approval. The admin-only tag ruleset makes the tag push the release approval. The release setup script no longer takes a reviewer and provisions the `npm-release` environment without required reviewers. To return to manual approval, add a required reviewer to that environment.
+
 ## [0.1.6] - 2026-10-14
 
 ### Compatibility
