@@ -12,7 +12,10 @@ changes; patch bumps are fixes only. The git tag (`vX.Y.Z`) and
 ## Gates — all required before tagging
 
 1. Candidate lands on `main` through a reviewed PR (squash merge).
-2. Hosted CI green on the exact merged SHA: Ubuntu with Node 24, audit gate included.
+2. `npm run verify:ci` (audit gate included) green on the exact merged SHA on
+   Ubuntu with Node 24. There is no hosted CI workflow; the tracked `pre-push`
+   hook runs `verify:ci`, and the release workflow's `verify` job re-runs it on
+   the tag before publication.
 3. `npm run verify:ci` green locally for the maintainer without warnings or
    warning-suppression flags.
 4. Packaged two-launch smoke in a Herdr-managed pane against the exact candidate:
