@@ -57,6 +57,11 @@
 	"peerDependencies": {
 		"@earendil-works/pi-tui": "*"
 	},
+	"overrides": {
+		"@earendil-works/pi-coding-agent": {
+			"undici": "8.12.2"
+		}
+	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.15",
 		"@earendil-works/pi-tui": "0.87.0",

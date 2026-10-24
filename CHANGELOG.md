@@ -14,6 +14,10 @@ All notable changes to this project are documented here. This format follows
 
 - Release publication is automatic: a signed `v*` tag push by an admin now publishes to npm through OIDC trusted publishing, with no separate environment approval. The admin-only tag ruleset makes the tag push the release approval. The release setup script no longer takes a reviewer and provisions the `npm-release` environment without required reviewers. To return to manual approval, add a required reviewer to that environment.
 
+### Security
+
+- Development only: an npm override pins the Pi host's Undici dependency to 8.12.2 in the Pi 1.1.0 and 1.3.0 compatibility lockfiles, which fixes GHSA-xjj6-f33q-929c, GHSA-4qv8-2p9j-2685, and GHSA-f72v-6w45-q472. The pinned Pi versions are unchanged. The root manifest carries the same override because the compatibility check requires both manifests to match. The published package does not depend on Undici and is unchanged.
+
 ## [0.1.6] - 2026-10-14
 
 ### Compatibility
