@@ -43,7 +43,7 @@ test("release verifies one immutable package on Ubuntu with Node 24", () => {
 
 	assert.match(verifyJob, /needs: package/);
 	assert.match(verifyJob, /runs-on: ubuntu-latest/);
-	assert.match(verifyJob, /node-version: "24"/);
+	assert.match(verifyJob, /node-version: "24\.22\.1"/);
 	assert.doesNotMatch(verifyJob, /strategy:|matrix:|macos-latest|22\.19\.0/);
 	assert.match(verifyJob, /uses: actions\/download-artifact@[0-9a-f]{40}/);
 	assert.match(verifyJob, /name: npm-package/);
