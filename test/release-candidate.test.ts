@@ -10,7 +10,10 @@ const CHANGELOG_PATH = path.resolve("CHANGELOG.md");
 const README_PATH = path.resolve("README.md");
 const MAINTAINER_GUIDE_PATH = path.resolve("docs/maintainer-development.md");
 const UNRELEASED_HEADING = "## [Unreleased]";
-const SUPPORTED_PI_VERSION = "0.87.0";
+const OLDEST_TESTED_PI_VERSION = "0.87.0";
+// WHY a range: dev installs track the newest host; older hosts stay covered by
+// the compat/pi-<version> lockfiles that pre-push runs.
+const DEV_PI_TUI_RANGE = "^1.4.0";
 const PI_CORE_PEER_RANGE = "*";
 const ISSUE_TEMPLATE_PATH = path.resolve(".github/ISSUE_TEMPLATE/bug_report.yml");
 
@@ -50,17 +53,17 @@ test("candidate gates warnings and uses native TypeScript stripping", () => {
 test("candidate depends only on the Pi TUI surface it imports", () => {
 	assert.equal(manifest.devDependencies["@earendil-works/pi-coding-agent"], undefined);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], undefined);
-	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], SUPPORTED_PI_VERSION);
+	assert.equal(manifest.devDependencies["@earendil-works/pi-tui"], DEV_PI_TUI_RANGE);
 	assert.equal(manifest.peerDependencies["@earendil-works/pi-tui"], PI_CORE_PEER_RANGE);
 	assert.equal(manifest.devDependencies.husky, undefined);
 	// Hooks are turned on per clone by scripts/setup-hooks, never by an
 	// install script that would run on user machines.
 	assert.match(maintainerGuide, /scripts\/setup-hooks/u);
 	assert.match(maintainerGuide, /generic checks first/u);
-	assert.ok(readme.includes(`Pi \`${SUPPORTED_PI_VERSION}\``));
+	assert.ok(readme.includes(`Pi \`${OLDEST_TESTED_PI_VERSION}\``));
 	assert.match(
 		issueTemplate,
-		new RegExp(`pi: ${SUPPORTED_PI_VERSION.replaceAll(".", "\\.")}`, "u"),
+		new RegExp(`pi: ${OLDEST_TESTED_PI_VERSION.replaceAll(".", "\\.")}`, "u"),
 	);
 });
 
