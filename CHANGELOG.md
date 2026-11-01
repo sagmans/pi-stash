@@ -13,6 +13,7 @@ All notable changes to this project are documented here. This format follows
 ### Changed
 
 - Release publication is automatic: a signed `v*` tag push by an admin now publishes to npm through OIDC trusted publishing, with no separate environment approval. The admin-only tag ruleset makes the tag push the release approval. The release setup script no longer takes a reviewer and provisions the `npm-release` environment without required reviewers. To return to manual approval, add a required reviewer to that environment.
+- Development only: lint and format checks run on Biome 2.6.3, in the root manifest and in every Pi compatibility lockfile. Biome 2.6 also formats Markdown by default, so Markdown stays out of its formatter and the documentation layout is unchanged. The published package is unchanged.
 
 ### Security
 
