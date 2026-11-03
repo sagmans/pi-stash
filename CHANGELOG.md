@@ -28,6 +28,10 @@ All notable changes to this project are documented here. This format follows
 
 ### Security
 
+- Development only: an npm override pins the Pi host's minimatch dependency to
+  11.0.1 in the Pi 1.1.0 and 1.3.0 compatibility lockfiles, which fixes
+  GHSA-g3hv-75wg-m249 (denial of service). The pinned Pi versions are unchanged.
+  The published package does not depend on minimatch and is unchanged.
 - Development only: an npm override pins the Pi host's Undici dependency to
   8.12.2 in the Pi 1.1.0 and 1.3.0 compatibility lockfiles, which fixes
   GHSA-xjj6-f33q-929c, GHSA-4qv8-2p9j-2685, and GHSA-f72v-6w45-q472. The pinned
