@@ -1,8 +1,8 @@
 # Dependabot policy. No package manager setting in this repository sets a
 # minimum release age, so the cooldown is the only supply chain window: a fresh
 # release must survive a week of public scrutiny before a bot proposes it.
-# compat/pi-1.1.0 is not listed on purpose: its Pi pins are a fixed host
-# baseline, and it is regenerated from package.json, not bumped on its own.
+# The compat/ lockfiles are not listed on purpose: their Pi pins are fixed
+# host baselines, regenerated from package.json, not bumped on their own.
 version: 2
 updates:
   # CI actions are pinned to full SHAs; dependabot still proposes version bumps.
@@ -15,6 +15,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # The dev lockfile tracks the current Pi TUI host (^1.4.0). The pre-push
+  # compatibility matrix tests the older tested hosts (0.87.0, 1.1.0, 1.3.0)
+  # from their own committed lockfiles in compat/, so a root Pi update retires
+  # no tested baseline and proposals inside the host line stay routine.
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -23,23 +27,19 @@ updates:
     cooldown:
       default-days: 7
     ignore:
-      # The lockfile holds Pi 0.87.0, the oldest host the README supports, and
-      # only this lockfile tests it. Any version update would retire that
-      # baseline, as the closed 1.x proposals did, so moving it stays a
-      # deliberate decision. update-types binds version updates only, so
-      # advisory fixes still open a pull request.
-      # Pi 1.4.0 and later are outside the supported host line. A versions
-      # rule binds security updates too, so no proposal can reach them.
+      # Pi 2.0.0 and later are outside the tested host line: the dev range
+      # ends below 2.0.0, and adopting a new major also moves the dev range,
+      # the README host list and the compatibility matrix, so it stays a
+      # deliberate decision. A versions rule binds security updates too, so no
+      # proposal can reach them; updates inside the host line, advisory fixes
+      # included, still open a pull request.
       - dependency-name: "@earendil-works/*"
-        versions: [">=1.4.0"]
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
+        versions: [">=2.0.0"]
     groups:
       # Each toolchain bump forces a compat lockfile regeneration, so one
       # pull request for the routine bumps means one regeneration, not many.
-      # The Pi host stays out: moving its baseline is a deliberate decision.
+      # The Pi host stays out: a Pi bump moves the host baseline and arrives
+      # as its own proposal, apart from routine toolchain churn.
       dev-toolchain:
         dependency-type: development
         patterns: ["*"]

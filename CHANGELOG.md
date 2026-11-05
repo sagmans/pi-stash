@@ -15,6 +15,13 @@ All notable changes to this project are documented here. This format follows
 
 ### Changed
 
+- CI only: Dependabot may again propose Pi host updates inside the tested
+  line. Its npm ignore rule and comments still assumed the root lockfile
+  holds the Pi 0.87.0 baseline; the Pi TUI dev dependency moved to the
+  `^1.4.0` range in October, and the pre-push compatibility matrix tests
+  the older hosts (0.87.0, 1.1.0, 1.3.0) from their own committed lockfiles
+  in `compat/`, so a root update retires no baseline. The rule now blocks
+  only Pi 2.0.0 and later; adopting a new major stays a deliberate decision.
 - Release publication is automatic: a signed `v*` tag push by an admin now
   publishes to npm through OIDC trusted publishing, with no separate environment
   approval. The admin-only tag ruleset makes the tag push the release approval.
