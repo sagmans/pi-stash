@@ -48,7 +48,11 @@ test("release verifies one immutable package on Ubuntu with Node 24", () => {
 	assert.match(verifyJob, /uses: actions\/download-artifact@[0-9a-f]{40}/);
 	assert.match(verifyJob, /name: npm-package/);
 	assert.match(verifyJob, /npm run verify:ci/);
-	assert.match(verifyJob, /npm install --ignore-scripts --prefix "\$install_root" "\$package"/);
+	// Artifact validation must reuse locked peers and load the downloaded bytes.
+	assert.match(verifyJob, /npm ci --ignore-scripts/);
+	assert.match(verifyJob, /cp -R node_modules "\$install_root\/"/);
+	assert.match(verifyJob, /tar -xzf "\$package" -C "\$package_root" --strip-components=1/);
+	assert.doesNotMatch(verifyJob, /npm install/);
 	assert.doesNotMatch(verifyJob, /continue-on-error:/);
 	assert.doesNotMatch(verifyJob, /NODE_NO_WARNINGS|--experimental-transform-types/);
 });
