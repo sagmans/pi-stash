@@ -32,6 +32,8 @@ All notable changes to this project are documented here. This format follows
   manifest and in every Pi compatibility lockfile. Biome 2.6 also formats
   Markdown by default, so Markdown stays out of its formatter and the
   documentation layout is unchanged. The published package is unchanged.
+- Dependency updates are maintained by hand on `main`; the automated update PR
+  configuration is retired. Security alerts stay enabled for manual triage.
 
 ### Security
 
