@@ -54,6 +54,7 @@ if ! gh api "repos/${REPO}/environments/${ENV_NAME}/deployment-branch-policies" 
 		-X POST -f "name=${TAG_PATTERN}" -f "type=tag" >/dev/null
 fi
 
+# shellcheck disable=SC2016 # JavaScript template literal, not shell expansion
 ruleset_payload="$(node -e '
 const [name, tagPattern, adminRoleId] = process.argv.slice(1);
 process.stdout.write(JSON.stringify({

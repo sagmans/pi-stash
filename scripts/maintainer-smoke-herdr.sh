@@ -168,6 +168,7 @@ herdr pane send-keys "$pane_id" "$stash_shortcut" >/dev/null
 herdr pane wait-output "$pane_id" --match "PI_STASH_SMOKE_STASHED" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "default native shortcut did not stash draft"
 assert_clean_output
+# shellcheck disable=SC2016 # JavaScript template literal, not shell expansion
 stash_file="$(node -e '
 const { existsSync, lstatSync, readFileSync, readdirSync } = require("node:fs");
 const path = require("node:path");
@@ -234,6 +235,7 @@ herdr pane run "$pane_id" "/stash-cleanup-images" >/dev/null
 herdr pane wait-output "$pane_id" --match "Asset cleanup: removed 1" --source recent-unwrapped \
 	--timeout "$ACTION_TIMEOUT_MS" >/dev/null || fail "popped image cleanup did not complete"
 assert_clean_output
+# shellcheck disable=SC2016 # JavaScript template literal, not shell expansion
 node -e '
 const { existsSync, readFileSync, readdirSync } = require("node:fs");
 const path = require("node:path");
